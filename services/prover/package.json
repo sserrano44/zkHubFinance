@@ -1,0 +1,23 @@
+{
+  "name": "@hubris/prover",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/server.js",
+    "test": "echo 'No tests for prover service'"
+  },
+  "dependencies": {
+    "@hubris/abis": "workspace:*",
+    "express": "^4.21.1",
+    "viem": "^2.23.2",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.8.0",
+    "@types/express": "^5.0.0",
+    "tsx": "^4.19.2"
+  }
+}

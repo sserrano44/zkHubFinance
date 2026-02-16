@@ -1,0 +1,502 @@
+# Hubris V2 Technical Specification
+
+Version: `0.1.0`  
+Last updated: `2026-02-15`
+
+## 1. Purpose and Scope
+
+This document defines the technical specification for Hubris V2, a hub-and-spoke, intent-based, cross-chain money market.
+
+Core goals:
+1. Concentrate accounting and liquidity on Base (hub).
+2. Allow user entry/exit on Worldchain (spoke).
+3. Require hub-side pre-locking for borrow/withdraw safety.
+4. Finalize all cross-chain accounting through batch settlement.
+5. Support production ZK verifier mode without changing settlement interface.
+
+In-scope components:
+1. Solidity contracts under `/Users/sebas/projects/HubrisV2/contracts/src`.
+2. Relayer, indexer, prover services under `/Users/sebas/projects/HubrisV2/services`.
+3. Circuit and proving artifacts under `/Users/sebas/projects/HubrisV2/circuits`.
+4. E2E/testing flows in `/Users/sebas/projects/HubrisV2/scripts` and `/Users/sebas/projects/HubrisV2/contracts/test`.
+
+## 2. Topology and Chains
+
+### 2.1 Network roles
+1. Hub chain: Base (source of truth for all accounting, risk, and liquidity).
+2. Spoke chain: Worldchain (escrow/fill execution and event emission).
+
+### 2.2 Default local/fork wiring
+1. Hub RPC default: `http://127.0.0.1:8545`
+2. Spoke RPC local default: `http://127.0.0.1:9545`
+3. Spoke RPC fork E2E default: `http://127.0.0.1:8546`
+4. Hub chain ID default: `8453`
+5. Spoke chain ID default: `480`
+
+## 3. Assets and Registry Model
+
+Initial assets:
+1. `WETH` (18 decimals)
+2. `USDC` (6 decimals)
+3. `wARS` (18 decimals default)
+4. `wBRL` (18 decimals default)
+
+`TokenRegistry` (`/Users/sebas/projects/HubrisV2/contracts/src/hub/TokenRegistry.sol`) stores:
+1. Hub token address.
+2. Spoke token address.
+3. Decimals.
+4. Risk params: `ltvBps`, `liquidationThresholdBps`, `liquidationBonusBps`, `supplyCap`, `borrowCap`.
+5. `bridgeAdapterId`.
+6. `enabled` flag.
+
+## 4. Core Data Structures
+
+Defined in `/Users/sebas/projects/HubrisV2/contracts/src/libraries/DataTypes.sol`.
+
+### 4.1 Intent
+```
+Intent {
+  uint8 intentType;        // 1=SUPPLY, 2=REPAY, 3=BORROW, 4=WITHDRAW
+  address user;
+  uint256 inputChainId;
+  uint256 outputChainId;
+  address inputToken;
+  address outputToken;
+  uint256 amount;
+  address recipient;
+  uint256 maxRelayerFee;
+  uint256 nonce;
+  uint256 deadline;
+}
+```
+
+### 4.2 SettlementBatch
+```
+SettlementBatch {
+  uint256 batchId;
+  uint256 hubChainId;
+  uint256 spokeChainId;
+  bytes32 actionsRoot;
+  SupplyCredit[] supplyCredits;
+  RepayCredit[] repayCredits;
+  BorrowFinalize[] borrowFinalizations;
+  WithdrawFinalize[] withdrawFinalizations;
+}
+```
+
+## 5. Contract Specifications
+
+### 5.1 HubMoneyMarket
+File: `/Users/sebas/projects/HubrisV2/contracts/src/hub/HubMoneyMarket.sol`
+
+Responsibilities:
+1. Track per-asset supply/debt shares and indices.
+2. Accrue interest via kink utilization model.
+3. Execute direct hub supply/borrow/repay/withdraw.
+4. Execute settlement-only credit/finalize entry points.
+5. Execute liquidation.
+
+Key state:
+1. `markets[asset] = { totalSupplyShares, totalDebtShares, supplyIndex, borrowIndex, reserves, lastAccrual, initialized }`
+2. `supplyShares[user][asset]`
+3. `debtShares[user][asset]`
+
+Access control:
+1. Owner sets `riskManager` and `settlement`.
+2. Settlement-only functions gated by `onlySettlement`.
+
+Settlement entry points:
+1. `settlementCreditSupply(user, asset, amount)`
+2. `settlementCreditRepay(user, asset, amount)`
+3. `settlementFinalizeBorrow(user, asset, amount, relayer, fee)`
+4. `settlementFinalizeWithdraw(user, asset, amount, relayer, fee)`
+
+### 5.2 HubRiskManager
+File: `/Users/sebas/projects/HubrisV2/contracts/src/hub/HubRiskManager.sol`
+
+Responsibilities:
+1. Enforce supply/borrow caps and enabled assets.
+2. Compute health factor and liquidation status.
+3. Check lock-time and runtime borrow/withdraw feasibility.
+
+Health factor:
+1. Per-asset supply value: `supplyAmount * priceE8 / 10^decimals`
+2. Per-asset debt value: `debtAmount * priceE8 / 10^decimals`
+3. Adjusted collateral: `sum(supplyValue * liquidationThresholdBps / 10_000)`
+4. HF: `adjustedCollateral * 1e18 / totalDebtValue`
+5. Liquidatable when `HF < 1e18`
+
+Lock-aware behavior:
+1. Includes `reservedWithdraw` subtraction from supply.
+2. Includes `reservedDebt` addition to debt.
+
+### 5.3 HubIntentInbox
+File: `/Users/sebas/projects/HubrisV2/contracts/src/hub/HubIntentInbox.sol`
+
+Responsibilities:
+1. EIP-712 intent verification.
+2. Nonce replay protection.
+3. Consumer allowlist for intent consumption.
+
+Domain:
+1. Name: `HubrisIntentInbox`
+2. Version: `1`
+
+Nonce model:
+1. `nonceUsed[user][nonce]` boolean.
+
+### 5.4 HubLockManager
+File: `/Users/sebas/projects/HubrisV2/contracts/src/hub/HubLockManager.sol`
+
+Responsibilities:
+1. Enforce mandatory lock before borrow/withdraw fill.
+2. Reserve hub liquidity and user borrowing/withdrawal headroom.
+3. Bind lock to relayer and expiry.
+4. Consume/cancel locks.
+
+Lock statuses:
+1. `0` none
+2. `1` active
+3. `2` consumed
+4. `3` cancelled
+
+Reservation state:
+1. `reservedLiquidity[asset]`
+2. `reservedDebt[user][asset]`
+3. `reservedWithdraw[user][asset]`
+
+### 5.5 HubCustody
+File: `/Users/sebas/projects/HubrisV2/contracts/src/hub/HubCustody.sol`
+
+Responsibilities:
+1. Register bridged deposits (`BRIDGE_ROLE`).
+2. Release matched deposits to market (`SETTLEMENT_ROLE`).
+3. Enforce one-time consume semantics per `depositId`.
+
+Note:
+1. Current production gap: deposit registration still trusts privileged bridge role rather than canonical bridge attestation.
+
+### 5.6 HubSettlement
+File: `/Users/sebas/projects/HubrisV2/contracts/src/hub/HubSettlement.sol`
+
+Responsibilities:
+1. Verify proof and public inputs.
+2. Enforce batch replay protection.
+3. Validate action root consistency.
+4. Apply supply/repay credits and borrow/withdraw finalizations atomically.
+5. Enforce fill-evidence and lock-consumption checks.
+
+Replay protections:
+1. `batchExecuted[batchId]`
+2. `depositSettled[depositId]`
+3. `intentSettled[intentId]`
+4. `fillEvidence[intentId].consumed`
+
+Batch max:
+1. `MAX_BATCH_ACTIONS = 50`
+
+### 5.7 Verifier
+File: `/Users/sebas/projects/HubrisV2/contracts/src/zk/Verifier.sol`
+
+Modes:
+1. Dev mode: `DEV_MODE=true`, proof accepted by hash match (`DEV_PROOF_HASH`).
+2. Prod mode: `DEV_MODE=false`, delegates to configured verifier contract.
+
+Public input count:
+1. Configured immutable `PUBLIC_INPUT_COUNT` (current expected value `4`).
+
+### 5.8 Groth16VerifierAdapter
+File: `/Users/sebas/projects/HubrisV2/contracts/src/zk/Groth16VerifierAdapter.sol`
+
+Responsibilities:
+1. Decode generic `bytes proof` into `(uint256[2], uint256[2][2], uint256[2])`.
+2. Validate `publicInputs.length == 4`.
+3. Validate each public input is `< SNARK_SCALAR_FIELD`.
+4. Delegate to snarkjs-style generated verifier signature.
+
+### 5.9 SpokePortal
+File: `/Users/sebas/projects/HubrisV2/contracts/src/spoke/SpokePortal.sol`
+
+Responsibilities:
+1. Escrow inbound supply/repay and invoke bridge adapter.
+2. Execute outbound fill for borrow/withdraw.
+3. Prevent double-fill by `intentId`.
+
+Events:
+1. `SupplyInitiated`
+2. `RepayInitiated`
+3. `BorrowFilled`
+4. `WithdrawFilled`
+
+### 5.10 Bridge Adapters
+Files:
+1. `/Users/sebas/projects/HubrisV2/contracts/src/spoke/CanonicalBridgeAdapter.sol`
+2. `/Users/sebas/projects/HubrisV2/contracts/src/spoke/MockBridgeAdapter.sol`
+
+Canonical adapter:
+1. Per-token route config.
+2. Caller allowlist.
+3. Pause support.
+4. Bridges via configured canonical bridge contract.
+
+Mock adapter:
+1. Local/dev escrow sink + event emission.
+2. Owner-controlled escrow release for testing.
+
+## 6. Intent and Lifecycle State Machines
+
+### 6.1 Supply/Repay (Worldchain -> Base)
+1. User calls `SpokePortal.initiateSupply` or `initiateRepay`.
+2. Spoke portal escrows funds and calls `bridgeToHub`.
+3. Relayer observes spoke event and records deposit in indexer.
+4. Hub custody deposit is registered (current path uses bridge role simulation).
+5. Prover enqueues action.
+6. Settlement batch verifies and applies supply/repay accounting.
+
+### 6.2 Borrow/Withdraw (Base accounting -> Worldchain payout)
+1. User signs EIP-712 intent.
+2. Relayer calls `HubLockManager.lock`.
+3. Relayer fills on spoke (`fillBorrow`/`fillWithdraw`).
+4. Relayer records fill evidence in settlement.
+5. Prover batches finalize action.
+6. Settlement consumes lock, updates hub accounting, reimburses relayer.
+
+### 6.3 Indexer intent statuses
+1. `initiated`
+2. `pending_lock`
+3. `locked`
+4. `filled`
+5. `awaiting_settlement`
+6. `settled`
+7. `failed`
+
+### 6.4 Indexer deposit statuses
+1. `initiated`
+2. `bridged`
+3. `settled`
+
+## 7. Proof System Specification
+
+### 7.1 Field and hash
+Constants:
+1. `SNARK_SCALAR_FIELD = 21888242871839275222246405745257275088548364400416034343698204186575808495617`
+2. `HASH_BETA = 1315423911`
+3. `HASH_C = 11400714819323198485`
+
+`hashPair(left,right)`:
+1. `t = (left + right*BETA + C) mod field`
+2. output = `t^5 mod field`
+
+### 7.2 actionsRoot derivation
+For a batch:
+1. Start with `hashPair(batchId, hubChainId)`.
+2. Fold `spokeChainId`.
+3. Fold total action count.
+4. Fold each action hash in deterministic order:
+   1. all supply credits
+   2. all repay credits
+   3. all borrow finalizations
+   4. all withdraw finalizations
+5. Right-pad with zero action hashes until 50 actions.
+6. Final state serialized as `bytes32` root.
+
+### 7.3 Public inputs
+Current public inputs passed on-chain:
+1. `batchId` (field reduced)
+2. `hubChainId` (field reduced)
+3. `spokeChainId` (field reduced)
+4. `actionsRoot` (field reduced)
+
+### 7.4 Circuit
+File: `/Users/sebas/projects/HubrisV2/circuits/circom/SettlementBatchRoot.circom`
+
+Public signals:
+1. `batchId`
+2. `hubChainId`
+3. `spokeChainId`
+4. `actionsRoot`
+
+Private witness:
+1. `actionCount`
+2. `actionIds[50]` (padded)
+
+Current limitation:
+1. Circuit proves deterministic root consistency, not full bridge/lock/fill validity constraints.
+
+## 8. Off-Chain Service Specifications
+
+### 8.1 Relayer service
+File: `/Users/sebas/projects/HubrisV2/services/relayer/src/server.ts`
+
+Public endpoints:
+1. `GET /health`
+2. `GET /quote?intentType=<n>&amount=<uint>`
+3. `POST /intent/submit`
+
+Behavior:
+1. Watches spoke `SupplyInitiated` and `RepayInitiated` logs.
+2. Updates indexer via signed internal calls.
+3. For borrow/withdraw submit:
+   1. lock on hub
+   2. fill on spoke
+   3. record fill evidence on hub
+   4. enqueue prover action
+
+Current production gap:
+1. Deposit path still includes mock mint/register simulation in relayer.
+
+### 8.2 Indexer service
+File: `/Users/sebas/projects/HubrisV2/services/indexer/src/server.ts`
+
+Public endpoints:
+1. `GET /health`
+2. `GET /activity?user=<address?>`
+3. `GET /intents/:intentId`
+4. `GET /deposits/:depositId`
+
+Internal endpoints (`/internal/*`, HMAC-authenticated):
+1. `POST /internal/intents/upsert`
+2. `POST /internal/intents/:intentId/status`
+3. `POST /internal/deposits/upsert`
+
+Persistence:
+1. JSON file store (`services/indexer/src/store.ts`), not yet production DB.
+
+### 8.3 Prover service
+File: `/Users/sebas/projects/HubrisV2/services/prover/src/server.ts`
+
+Public endpoint:
+1. `GET /health`
+
+Internal endpoints:
+1. `POST /internal/enqueue`
+2. `POST /internal/flush`
+
+Modes:
+1. `PROVER_MODE=dev`: deterministic dev proof.
+2. `PROVER_MODE=circuit`: executes `snarkjs groth16 fullprove`.
+
+Queue behavior:
+1. Dedup on action key.
+2. Dequeue only after settlement tx receipt.
+3. Persists queue and `nextBatchId` in JSON files.
+
+### 8.4 Internal API authentication
+Used by relayer/prover/indexer.
+
+Headers:
+1. `x-hubris-internal-ts`
+2. `x-hubris-internal-sig`
+
+Signature payload:
+1. `METHOD + "\n" + ROUTE_PATH + "\n" + TIMESTAMP + "\n" + SHA256(rawBody)`
+2. HMAC-SHA256 using `INTERNAL_API_AUTH_SECRET`.
+
+Additional controls:
+1. Timestamp skew window.
+2. Replay cache.
+3. Route-level rate limiting.
+4. Request-id propagation (`x-request-id`) and structured audit logs.
+
+## 9. Deployment Specification
+
+Primary script:
+1. `/Users/sebas/projects/HubrisV2/contracts/script/deploy-local.mjs`
+
+Outputs:
+1. `/Users/sebas/projects/HubrisV2/contracts/deployments/local.json`
+2. `/Users/sebas/projects/HubrisV2/contracts/deployments/local.env`
+3. `/Users/sebas/projects/HubrisV2/apps/web/public/deployments/local.json`
+
+Verifier deployment modes:
+1. `HUB_VERIFIER_DEV_MODE=1`:
+   1. Deploys `Verifier` in dev mode.
+2. `HUB_VERIFIER_DEV_MODE=0`:
+   1. Requires `HUB_GROTH16_VERIFIER_ADDRESS`.
+   2. Deploys `Groth16VerifierAdapter`.
+   3. Deploys `Verifier` in prod mode pointing to adapter.
+
+## 10. E2E and Test Specifications
+
+### 10.1 Contract test suites
+Location: `/Users/sebas/projects/HubrisV2/contracts/test`
+
+Coverage includes:
+1. Interest and share-accounting invariants.
+2. Lock HF checks and reservation concurrency.
+3. Settlement replay/failure/atomicity.
+4. Liquidation behavior.
+5. Base fork supply/borrow lifecycle.
+6. Cross-chain fork lock/fill/settle path.
+7. Production verifier path rejecting tampered proofs.
+
+### 10.2 Scripted fork E2E (dev proof)
+Script:
+1. `/Users/sebas/projects/HubrisV2/scripts/e2e-fork.mjs`
+
+Command:
+1. `pnpm test:e2e:fork`
+
+RPC resolution order:
+1. process env (`HUB_RPC_URL`, `SPOKE_RPC_URL`)
+2. `.env` (`HUB_RPC_URL`, `SPOKE_RPC_URL`)
+3. Tenderly fallback (`TENDERLY_BASE_RPC`, `TENDERLY_WORLDCHAIN_RPC`) from process env or `.env`
+4. localhost defaults (`8545/8546`)
+
+### 10.3 Scripted fork E2E (circuit mode)
+Script:
+1. `/Users/sebas/projects/HubrisV2/scripts/e2e-fork-circuit-one-shot.mjs`
+
+Command:
+1. `pnpm test:e2e:fork:circuit`
+
+Preflight requirements:
+1. running fork RPCs for hub/spoke
+2. circuit artifacts present (`.wasm`, `.zkey`)
+3. `snarkjs` available
+4. if `HUB_GROTH16_VERIFIER_ADDRESS` is missing/stale, prepare step deploys/re-resolves it
+
+Direct runner (without one-shot prepare):
+1. script: `/Users/sebas/projects/HubrisV2/scripts/e2e-fork-circuit.mjs`
+2. command: `pnpm test:e2e:fork:circuit:exec`
+
+### 10.4 Circuit E2E prepare helper
+Script:
+1. `/Users/sebas/projects/HubrisV2/scripts/e2e-fork-circuit-prepare.mjs`
+
+Command:
+1. `pnpm test:e2e:fork:circuit:prepare`
+
+Behavior:
+1. Resolves RPC endpoints (including Tenderly keys from `.env`).
+2. Auto-deploys generated Groth16 verifier with `forge create --broadcast` when source exists and address is unset.
+3. If `--json` is passed, emits machine-readable env payload for one-shot wrapper scripts.
+4. Prints exact `export ...` commands and the final `pnpm test:e2e:fork:circuit` invocation.
+
+## 11. Security and Safety Requirements
+
+Enforced in current implementation:
+1. Hub-side lock required before borrow/withdraw finalization.
+2. Lock relayer binding and expiry checks.
+3. Double-fill prevention on spoke.
+4. Batch/intent/deposit replay protections in settlement.
+5. Settlement applies only after verifier success.
+6. Reentrancy guards on critical state transition functions.
+7. Pause controls on lock manager, settlement, market, and spoke portal.
+
+Known security gaps (tracked by readiness plan):
+1. Canonical bridge attestation path for deposits (P0-2).
+2. Production DB/idempotent outbox model for services (P0-4).
+3. Full validity constraints in ZK circuit (remaining P0-1 work).
+4. Governance hardening, oracle hardening, and audit closure (P1/P2).
+
+## 12. Open Work to Reach Production-Ready
+
+The remaining blockers are:
+1. Complete P0-1 circuit constraints:
+   1. prove deposit attestation validity
+   2. prove lock/fill matching validity
+   3. prove amount/fee constraint validity
+2. Complete P0-2 canonical bridge attestation path and remove simulation mint path.
+3. Complete P0-4 durable persistence migration from JSON to transactional DB + outbox.
+4. Execute P1 and P2 workstreams as defined in `/Users/sebas/projects/HubrisV2/PRODUCTION_READINESS_PLAN.md`.

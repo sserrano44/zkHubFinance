@@ -1,0 +1,20 @@
+{
+  "name": "@hubris/sdk",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "pnpm run build --watch",
+    "test": "echo 'No tests for @hubris/sdk'"
+  },
+  "dependencies": {
+    "@hubris/abis": "workspace:*",
+    "viem": "^2.23.2"
+  },
+  "devDependencies": {
+    "@types/node": "^22.8.0"
+  }
+}

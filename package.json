@@ -1,0 +1,27 @@
+{
+  "name": "hubris-v2",
+  "private": true,
+  "packageManager": "pnpm@9.12.0",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "bash ./scripts/dev.sh",
+    "dev:turbo": "turbo run dev --parallel",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "test:e2e:fork": "node ./scripts/e2e-fork.mjs",
+    "test:e2e:fork:circuit": "node ./scripts/e2e-fork-circuit-one-shot.mjs",
+    "test:e2e:fork:circuit:exec": "node ./scripts/e2e-fork-circuit.mjs",
+    "test:e2e:fork:circuit:prepare": "node ./scripts/e2e-fork-circuit-prepare.mjs",
+    "format": "turbo run format",
+    "contracts:test": "cd contracts && forge test -vvv",
+    "contracts:build": "cd contracts && forge build",
+    "contracts:deploy:local": "bash ./contracts/script/deploy-local.sh",
+    "abis:generate": "pnpm --filter @hubris/abis run generate",
+    "deployer:address": "node --env-file=.env -e \"const{privateKeyToAccount}=require('viem/accounts');console.log(privateKeyToAccount(process.env.DEPLOYER_PRIVATE_KEY).address)\""
+  },
+  "devDependencies": {
+    "turbo": "^2.1.3",
+    "typescript": "^5.6.3",
+    "viem": "^2.23.2"
+  }
+}

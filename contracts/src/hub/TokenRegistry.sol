@@ -1,0 +1,146 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+import {AccessControl} from "@openzeppelin/access/AccessControl.sol";
+import {DataTypes} from "../libraries/DataTypes.sol";
+import {ITokenRegistry} from "../interfaces/ITokenRegistry.sol";
+
+contract TokenRegistry is AccessControl, ITokenRegistry {
+    bytes32 public constant REGISTRY_ADMIN_ROLE = keccak256("REGISTRY_ADMIN_ROLE");
+
+    mapping(address => TokenConfig) private _byHubToken;
+    mapping(address => address) private _hubBySpoke;
+    address[] private _assets;
+    mapping(address => bool) private _assetExists;
+
+    event TokenRegistered(
+        address indexed hubToken,
+        address indexed spokeToken,
+        uint8 decimals,
+        uint256 ltvBps,
+        uint256 liquidationThresholdBps,
+        uint256 liquidationBonusBps,
+        uint256 supplyCap,
+        uint256 borrowCap,
+        bytes32 bridgeAdapterId
+    );
+
+    event TokenUpdated(address indexed hubToken);
+
+    error InvalidTokenAddress();
+    error InvalidRiskParams();
+
+    constructor(address admin) {
+        _grantRole(DEFAULT_ADMIN_ROLE, admin);
+        _grantRole(REGISTRY_ADMIN_ROLE, admin);
+    }
+
+    function registerToken(TokenConfig calldata config) public onlyRole(REGISTRY_ADMIN_ROLE) {
+        _registerToken(config);
+    }
+
+    function registerTokenFlat(
+        address hubToken,
+        address spokeToken,
+        uint8 decimals,
+        uint256 ltvBps,
+        uint256 liquidationThresholdBps,
+        uint256 liquidationBonusBps,
+        uint256 supplyCap,
+        uint256 borrowCap,
+        bytes32 bridgeAdapterId,
+        bool enabled
+    ) external onlyRole(REGISTRY_ADMIN_ROLE) {
+        TokenConfig memory config = TokenConfig({
+            hubToken: hubToken,
+            spokeToken: spokeToken,
+            decimals: decimals,
+            risk: DataTypes.RiskParams({
+                ltvBps: ltvBps,
+                liquidationThresholdBps: liquidationThresholdBps,
+                liquidationBonusBps: liquidationBonusBps,
+                supplyCap: supplyCap,
+                borrowCap: borrowCap
+            }),
+            bridgeAdapterId: bridgeAdapterId,
+            enabled: enabled
+        });
+        _registerToken(config);
+    }
+
+    function _registerToken(TokenConfig memory config) internal {
+        if (config.hubToken == address(0) || config.spokeToken == address(0)) {
+            revert InvalidTokenAddress();
+        }
+        _validateRisk(config.risk);
+
+        _byHubToken[config.hubToken] = config;
+        _hubBySpoke[config.spokeToken] = config.hubToken;
+
+        if (!_assetExists[config.hubToken]) {
+            _assetExists[config.hubToken] = true;
+            _assets.push(config.hubToken);
+        }
+
+        emit TokenRegistered(
+            config.hubToken,
+            config.spokeToken,
+            config.decimals,
+            config.risk.ltvBps,
+            config.risk.liquidationThresholdBps,
+            config.risk.liquidationBonusBps,
+            config.risk.supplyCap,
+            config.risk.borrowCap,
+            config.bridgeAdapterId
+        );
+    }
+
+    function updateRisk(address hubToken, DataTypes.RiskParams calldata risk)
+        external
+        onlyRole(REGISTRY_ADMIN_ROLE)
+    {
+        TokenConfig storage cfg = _byHubToken[hubToken];
+        if (cfg.hubToken == address(0)) revert InvalidTokenAddress();
+        _validateRisk(risk);
+        cfg.risk = risk;
+        emit TokenUpdated(hubToken);
+    }
+
+    function setBridgeAdapterId(address hubToken, bytes32 bridgeAdapterId)
+        external
+        onlyRole(REGISTRY_ADMIN_ROLE)
+    {
+        TokenConfig storage cfg = _byHubToken[hubToken];
+        if (cfg.hubToken == address(0)) revert InvalidTokenAddress();
+        cfg.bridgeAdapterId = bridgeAdapterId;
+        emit TokenUpdated(hubToken);
+    }
+
+    function setEnabled(address hubToken, bool enabled) external onlyRole(REGISTRY_ADMIN_ROLE) {
+        TokenConfig storage cfg = _byHubToken[hubToken];
+        if (cfg.hubToken == address(0)) revert InvalidTokenAddress();
+        cfg.enabled = enabled;
+        emit TokenUpdated(hubToken);
+    }
+
+    function getConfigByHub(address hubToken) external view returns (TokenConfig memory) {
+        return _byHubToken[hubToken];
+    }
+
+    function getHubTokenBySpoke(address spokeToken) external view returns (address) {
+        return _hubBySpoke[spokeToken];
+    }
+
+    function getSupportedAssets() external view returns (address[] memory) {
+        return _assets;
+    }
+
+    function _validateRisk(DataTypes.RiskParams memory risk) private pure {
+        if (
+            risk.ltvBps > 10_000 || risk.liquidationThresholdBps > 10_000
+                || risk.ltvBps > risk.liquidationThresholdBps || risk.liquidationBonusBps < 10_000
+        ) {
+            revert InvalidRiskParams();
+        }
+    }
+}
