@@ -8,10 +8,18 @@ import {ITokenRegistry} from "../interfaces/ITokenRegistry.sol";
 contract TokenRegistry is AccessControl, ITokenRegistry {
     bytes32 public constant REGISTRY_ADMIN_ROLE = keccak256("REGISTRY_ADMIN_ROLE");
 
+    enum TokenBehavior {
+        UNSET,
+        STANDARD,
+        FEE_ON_TRANSFER,
+        REBASING
+    }
+
     mapping(address => TokenConfig) private _byHubToken;
     mapping(address => address) private _hubBySpoke;
     address[] private _assets;
     mapping(address => bool) private _assetExists;
+    mapping(address => TokenBehavior) public tokenBehaviorByToken;
 
     event TokenRegistered(
         address indexed hubToken,
@@ -26,10 +34,13 @@ contract TokenRegistry is AccessControl, ITokenRegistry {
     );
 
     event TokenUpdated(address indexed hubToken);
+    event TokenBehaviorSet(address indexed token, TokenBehavior behavior);
 
     error InvalidTokenAddress();
     error InvalidRiskParams();
     error SpokeTokenAlreadyRegistered(address spokeToken, address hubToken);
+    error TokenBehaviorNotConfigured(address token);
+    error UnsupportedTokenBehavior(address token, TokenBehavior behavior);
 
     constructor(address admin) {
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
@@ -38,6 +49,12 @@ contract TokenRegistry is AccessControl, ITokenRegistry {
 
     function registerToken(TokenConfig calldata config) public onlyRole(REGISTRY_ADMIN_ROLE) {
         _registerToken(config);
+    }
+
+    function setTokenBehavior(address token, TokenBehavior behavior) external onlyRole(REGISTRY_ADMIN_ROLE) {
+        if (token == address(0)) revert InvalidTokenAddress();
+        tokenBehaviorByToken[token] = behavior;
+        emit TokenBehaviorSet(token, behavior);
     }
 
     function registerTokenFlat(
@@ -73,6 +90,8 @@ contract TokenRegistry is AccessControl, ITokenRegistry {
         if (config.hubToken == address(0) || config.spokeToken == address(0)) {
             revert InvalidTokenAddress();
         }
+        _requireSupportedTokenBehavior(config.hubToken);
+        _requireSupportedTokenBehavior(config.spokeToken);
         _validateRisk(config.risk);
 
         TokenConfig storage previous = _byHubToken[config.hubToken];
@@ -153,5 +172,11 @@ contract TokenRegistry is AccessControl, ITokenRegistry {
         ) {
             revert InvalidRiskParams();
         }
+    }
+
+    function _requireSupportedTokenBehavior(address token) private view {
+        TokenBehavior behavior = tokenBehaviorByToken[token];
+        if (behavior == TokenBehavior.UNSET) revert TokenBehaviorNotConfigured(token);
+        if (behavior != TokenBehavior.STANDARD) revert UnsupportedTokenBehavior(token, behavior);
     }
 }

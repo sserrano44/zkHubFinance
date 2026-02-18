@@ -63,6 +63,7 @@ contract HubMoneyMarket is Ownable, Pausable, ReentrancyGuard, IHubMoneyMarket {
 
     event SettlementSupplyCredited(address indexed user, address indexed asset, uint256 amount);
     event SettlementRepayCredited(address indexed user, address indexed asset, uint256 amount);
+    event SettlementRepaySurplusRefunded(address indexed user, address indexed asset, uint256 amount);
     event SettlementBorrowFinalized(address indexed user, address indexed asset, uint256 amount, address relayer, uint256 fee);
     event SettlementWithdrawFinalized(address indexed user, address indexed asset, uint256 amount, address relayer, uint256 fee);
 
@@ -349,6 +350,12 @@ contract HubMoneyMarket is Ownable, Pausable, ReentrancyGuard, IHubMoneyMarket {
         market.totalDebtShares -= burnShares;
 
         emit SettlementRepayCredited(user, asset, actualRepay);
+    }
+
+    function settlementRefund(address asset, address recipient, uint256 amount) external onlySettlement whenNotPaused {
+        if (amount == 0) revert InvalidAmount();
+        IERC20(asset).safeTransfer(recipient, amount);
+        emit SettlementRepaySurplusRefunded(recipient, asset, amount);
     }
 
     function settlementFinalizeBorrow(address user, address asset, uint256 amount, address relayer, uint256 fee)

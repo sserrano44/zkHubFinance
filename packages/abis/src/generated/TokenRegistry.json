@@ -411,6 +411,43 @@
   },
   {
     "type": "function",
+    "name": "setTokenBehavior",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "behavior",
+        "type": "uint8",
+        "internalType": "enum TokenRegistry.TokenBehavior"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "tokenBehaviorByToken",
+    "inputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "",
+        "type": "uint8",
+        "internalType": "enum TokenRegistry.TokenBehavior"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
     "name": "updateRisk",
     "inputs": [
       {
@@ -525,6 +562,25 @@
         "type": "address",
         "indexed": true,
         "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "TokenBehaviorSet",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "behavior",
+        "type": "uint8",
+        "indexed": false,
+        "internalType": "enum TokenRegistry.TokenBehavior"
       }
     ],
     "anonymous": false
@@ -647,6 +703,33 @@
         "name": "hubToken",
         "type": "address",
         "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "TokenBehaviorNotConfigured",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "UnsupportedTokenBehavior",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "behavior",
+        "type": "uint8",
+        "internalType": "enum TokenRegistry.TokenBehavior"
       }
     ]
   }

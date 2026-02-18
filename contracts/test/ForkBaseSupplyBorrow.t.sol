@@ -213,6 +213,8 @@ contract ForkBaseSupplyBorrowTest is TestBase {
             borrowCap: borrowCap
         });
 
+        registry.setTokenBehavior(asset, TokenRegistry.TokenBehavior.STANDARD);
+
         registry.registerToken(
             ITokenRegistry.TokenConfig({
                 hubToken: asset,

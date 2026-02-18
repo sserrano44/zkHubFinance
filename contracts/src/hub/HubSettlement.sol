@@ -51,6 +51,7 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
         uint256 fee,
         address relayer
     );
+    event RepaySurplusRefunded(uint256 indexed depositId, address indexed user, address indexed hubAsset, uint256 amount);
     event BatchSettled(uint256 indexed batchId, bytes32 indexed actionsRoot, uint256 actionCount);
 
     error BatchAlreadyExecuted(uint256 batchId);
@@ -289,6 +290,7 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
         for (uint256 i = 0; i < credits.length; i++) {
             DataTypes.SupplyCredit calldata sc = credits[i];
             if (depositSettled[sc.depositId]) revert DepositAlreadySettled(sc.depositId);
+            depositSettled[sc.depositId] = true;
 
             // Deposit must already exist in custody (bridged) before crediting market accounting.
             custody.consumeDepositToMarket(
@@ -301,7 +303,6 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
             );
 
             moneyMarket.settlementCreditSupply(sc.user, sc.hubAsset, sc.amount);
-            depositSettled[sc.depositId] = true;
         }
     }
 
@@ -309,6 +310,7 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
         for (uint256 i = 0; i < credits.length; i++) {
             DataTypes.RepayCredit calldata rc = credits[i];
             if (depositSettled[rc.depositId]) revert DepositAlreadySettled(rc.depositId);
+            depositSettled[rc.depositId] = true;
 
             custody.consumeDepositToMarket(
                 rc.depositId,
@@ -319,8 +321,12 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
                 address(moneyMarket)
             );
 
-            moneyMarket.settlementCreditRepay(rc.user, rc.hubAsset, rc.amount);
-            depositSettled[rc.depositId] = true;
+            uint256 actualRepay = moneyMarket.settlementCreditRepay(rc.user, rc.hubAsset, rc.amount);
+            if (actualRepay < rc.amount) {
+                uint256 surplus = rc.amount - actualRepay;
+                moneyMarket.settlementRefund(rc.hubAsset, rc.user, surplus);
+                emit RepaySurplusRefunded(rc.depositId, rc.user, rc.hubAsset, surplus);
+            }
         }
     }
 
@@ -338,6 +344,8 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
             ) {
                 revert FillEvidenceMismatch(action.intentId);
             }
+            ev.consumed = true;
+            intentSettled[action.intentId] = true;
 
             // Lock consumption enforces hub-side reservation + relayer binding.
             lockManager.consumeLock(
@@ -350,9 +358,6 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
             );
 
             moneyMarket.settlementFinalizeBorrow(action.user, action.hubAsset, action.amount, action.relayer, action.fee);
-
-            ev.consumed = true;
-            intentSettled[action.intentId] = true;
         }
     }
 
@@ -370,6 +375,8 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
             ) {
                 revert FillEvidenceMismatch(action.intentId);
             }
+            ev.consumed = true;
+            intentSettled[action.intentId] = true;
 
             lockManager.consumeLock(
                 action.intentId,
@@ -381,9 +388,6 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
             );
 
             moneyMarket.settlementFinalizeWithdraw(action.user, action.hubAsset, action.amount, action.relayer, action.fee);
-
-            ev.consumed = true;
-            intentSettled[action.intentId] = true;
         }
     }
 }

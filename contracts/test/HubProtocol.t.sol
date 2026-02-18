@@ -563,6 +563,56 @@ contract HubProtocolTest is TestBase {
         assertEq(market.getUserSupply(user, address(hubUSDC)), 100e6, "supply must remain capped");
     }
 
+    function test_settlementRepayRefundsSurplusToUser() external {
+        uint256 borrowAmount = 50e6;
+        uint256 repayCreditAmount = 80e6;
+        uint256 depositId = 12_010;
+
+        vm.startPrank(user);
+        hubWETH.approve(address(market), type(uint256).max);
+        market.supply(address(hubWETH), 10e18, user);
+        market.borrow(address(hubUSDC), borrowAmount, user);
+        vm.stopPrank();
+
+        hubUSDC.mint(address(custody), repayCreditAmount);
+        _registerAttestedDeposit(depositId, Constants.INTENT_REPAY, user, address(hubUSDC), repayCreditAmount);
+
+        uint256 debtBefore = market.getUserDebt(user, address(hubUSDC));
+        uint256 userUsdcBefore = hubUSDC.balanceOf(user);
+        uint256 marketUsdcBefore = hubUSDC.balanceOf(address(market));
+
+        DataTypes.RepayCredit[] memory repayCredits = new DataTypes.RepayCredit[](1);
+        repayCredits[0] =
+            DataTypes.RepayCredit({depositId: depositId, user: user, hubAsset: address(hubUSDC), amount: repayCreditAmount});
+
+        DataTypes.SettlementBatch memory batch = DataTypes.SettlementBatch({
+            batchId: 12_011,
+            hubChainId: block.chainid,
+            spokeChainId: 480,
+            actionsRoot: bytes32(0),
+            supplyCredits: new DataTypes.SupplyCredit[](0),
+            repayCredits: repayCredits,
+            borrowFinalizations: new DataTypes.BorrowFinalize[](0),
+            withdrawFinalizations: new DataTypes.WithdrawFinalize[](0)
+        });
+        batch.actionsRoot = settlement.computeActionsRoot(batch);
+
+        settlement.settleBatch(batch, DEV_PROOF);
+
+        uint256 surplus = repayCreditAmount - debtBefore;
+        assertEq(market.getUserDebt(user, address(hubUSDC)), 0, "repay credit should clear all debt");
+        assertEq(
+            hubUSDC.balanceOf(user) - userUsdcBefore,
+            surplus,
+            "surplus repay amount should be refunded to user"
+        );
+        assertEq(
+            hubUSDC.balanceOf(address(market)) - marketUsdcBefore,
+            debtBefore,
+            "market should retain only actual repay amount"
+        );
+    }
+
     function test_settlementBorrowRechecksRiskAtFinalization() external {
         uint256 borrowAmount = 2_000e6;
 
@@ -728,6 +778,7 @@ contract HubProtocolTest is TestBase {
     function test_tokenRegistryReRegisterHubTokenClearsOldSpokeMapping() external {
         MockERC20 replacementSpokeToken = new MockERC20("Spoke USDC v2", "USDC2", 6);
         ITokenRegistry.TokenConfig memory cfg = registry.getConfigByHub(address(hubUSDC));
+        registry.setTokenBehavior(address(replacementSpokeToken), TokenRegistry.TokenBehavior.STANDARD);
 
         registry.registerToken(
             ITokenRegistry.TokenConfig({
@@ -761,6 +812,50 @@ contract HubProtocolTest is TestBase {
                 hubToken: address(hubWETH),
                 spokeToken: address(spokeUSDC),
                 decimals: cfg.decimals,
+                risk: cfg.risk,
+                bridgeAdapterId: cfg.bridgeAdapterId,
+                enabled: cfg.enabled
+            })
+        );
+    }
+
+    function test_tokenRegistryRejectsUnsupportedTokenBehavior() external {
+        MockERC20 unsupportedHubToken = new MockERC20("Unsupported Hub", "UHUB", 6);
+        MockERC20 supportedSpokeToken = new MockERC20("Supported Spoke", "SSPK", 6);
+        ITokenRegistry.TokenConfig memory cfg = registry.getConfigByHub(address(hubUSDC));
+
+        registry.setTokenBehavior(address(unsupportedHubToken), TokenRegistry.TokenBehavior.FEE_ON_TRANSFER);
+        registry.setTokenBehavior(address(supportedSpokeToken), TokenRegistry.TokenBehavior.STANDARD);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TokenRegistry.UnsupportedTokenBehavior.selector,
+                address(unsupportedHubToken),
+                TokenRegistry.TokenBehavior.FEE_ON_TRANSFER
+            )
+        );
+        registry.registerToken(
+            ITokenRegistry.TokenConfig({
+                hubToken: address(unsupportedHubToken),
+                spokeToken: address(supportedSpokeToken),
+                decimals: 6,
+                risk: cfg.risk,
+                bridgeAdapterId: cfg.bridgeAdapterId,
+                enabled: cfg.enabled
+            })
+        );
+
+        MockERC20 unsetBehaviorSpokeToken = new MockERC20("Unset Spoke", "USPK2", 6);
+        registry.setTokenBehavior(address(unsupportedHubToken), TokenRegistry.TokenBehavior.STANDARD);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(TokenRegistry.TokenBehaviorNotConfigured.selector, address(unsetBehaviorSpokeToken))
+        );
+        registry.registerToken(
+            ITokenRegistry.TokenConfig({
+                hubToken: address(unsupportedHubToken),
+                spokeToken: address(unsetBehaviorSpokeToken),
+                decimals: 6,
                 risk: cfg.risk,
                 bridgeAdapterId: cfg.bridgeAdapterId,
                 enabled: cfg.enabled
@@ -1124,6 +1219,11 @@ contract HubProtocolTest is TestBase {
             supplyCap: 10_000_000e18,
             borrowCap: 10_000_000e18
         });
+
+        registry.setTokenBehavior(address(hubUSDC), TokenRegistry.TokenBehavior.STANDARD);
+        registry.setTokenBehavior(address(spokeUSDC), TokenRegistry.TokenBehavior.STANDARD);
+        registry.setTokenBehavior(address(hubWETH), TokenRegistry.TokenBehavior.STANDARD);
+        registry.setTokenBehavior(address(spokeWETH), TokenRegistry.TokenBehavior.STANDARD);
 
         registry.registerToken(
             ITokenRegistry.TokenConfig({

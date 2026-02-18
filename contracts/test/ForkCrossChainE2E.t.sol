@@ -233,6 +233,11 @@ contract ForkCrossChainE2ETest is TestBase {
             borrowCap: 10_000_000e18
         });
 
+        registry.setTokenBehavior(address(hubUsdc), TokenRegistry.TokenBehavior.STANDARD);
+        registry.setTokenBehavior(address(spokeUsdc), TokenRegistry.TokenBehavior.STANDARD);
+        registry.setTokenBehavior(BASE_WETH, TokenRegistry.TokenBehavior.STANDARD);
+        registry.setTokenBehavior(address(spokeWeth), TokenRegistry.TokenBehavior.STANDARD);
+
         registry.registerToken(
             ITokenRegistry.TokenConfig({
                 hubToken: address(hubUsdc),

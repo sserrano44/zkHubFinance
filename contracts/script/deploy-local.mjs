@@ -291,6 +291,19 @@ async function main() {
     await write(hubWallet, hubPublic, {
       address: tokenRegistry,
       abi: tokenRegistryAbi,
+      functionName: "setTokenBehavior",
+      args: [row.hub, 1]
+    });
+    await write(hubWallet, hubPublic, {
+      address: tokenRegistry,
+      abi: tokenRegistryAbi,
+      functionName: "setTokenBehavior",
+      args: [row.spoke, 1]
+    });
+
+    await write(hubWallet, hubPublic, {
+      address: tokenRegistry,
+      abi: tokenRegistryAbi,
       functionName: "registerTokenFlat",
       args: [
         row.hub,
