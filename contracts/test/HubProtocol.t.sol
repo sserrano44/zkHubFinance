@@ -11,12 +11,13 @@ import {MockOracle} from "../src/mocks/MockOracle.sol";
 import {TokenRegistry} from "../src/hub/TokenRegistry.sol";
 import {KinkInterestRateModel} from "../src/hub/KinkInterestRateModel.sol";
 import {HubMoneyMarket} from "../src/hub/HubMoneyMarket.sol";
-import {HubRiskManager, IPriceOracle} from "../src/hub/HubRiskManager.sol";
+import {HubRiskManager} from "../src/hub/HubRiskManager.sol";
 import {HubIntentInbox} from "../src/hub/HubIntentInbox.sol";
 import {HubLockManager} from "../src/hub/HubLockManager.sol";
 import {HubCustody} from "../src/hub/HubCustody.sol";
 import {HubSettlement} from "../src/hub/HubSettlement.sol";
 import {ITokenRegistry} from "../src/interfaces/ITokenRegistry.sol";
+import {IPriceOracle} from "../src/interfaces/IPriceOracle.sol";
 import {SpokePortal} from "../src/spoke/SpokePortal.sol";
 import {MockBridgeAdapter} from "../src/spoke/MockBridgeAdapter.sol";
 import {Verifier} from "../src/zk/Verifier.sol";
@@ -453,6 +454,12 @@ contract HubProtocolTest is TestBase {
 
         bytes32 intentId = IntentHasher.rawIntentId(borrowIntent);
 
+        uint8 lockStatusNone = lockManager.LOCK_STATUS_NONE();
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                HubSettlement.FillEvidenceLockNotActive.selector, intentId, lockStatusNone
+            )
+        );
         vm.prank(relayer);
         settlement.recordFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), borrowIntent.amount, 0, relayer);
 
@@ -471,7 +478,7 @@ contract HubProtocolTest is TestBase {
         });
         noLockBatch.actionsRoot = settlement.computeActionsRoot(noLockBatch);
 
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(HubSettlement.MissingFillEvidence.selector, intentId));
         settlement.settleBatch(noLockBatch, DEV_PROOF);
 
         DataTypes.Intent memory lockNoFillIntent = _makeIntent(Constants.INTENT_BORROW, 5e6, 51);
@@ -693,6 +700,104 @@ contract HubProtocolTest is TestBase {
         vm.prank(relayer);
         vm.expectRevert(abi.encodeWithSelector(HubSettlement.FillEvidenceAlreadyExists.selector, intentId));
         settlement.recordFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), intent.amount, 0, relayer);
+    }
+
+    function test_fillEvidenceRequiresCallerRelayerAndMatchingLock() external {
+        vm.prank(user);
+        hubUSDC.approve(address(market), type(uint256).max);
+        vm.prank(user);
+        market.supply(address(hubUSDC), 200e6, user);
+
+        DataTypes.Intent memory intent = _makeIntent(Constants.INTENT_BORROW, 50e6, 641);
+        bytes memory sig = _signIntent(intent);
+
+        vm.prank(relayer);
+        bytes32 intentId = lockManager.lock(intent, sig);
+
+        vm.prank(relayer);
+        vm.expectRevert(
+            abi.encodeWithSelector(HubSettlement.FillEvidenceRelayerMismatch.selector, relayer, user)
+        );
+        settlement.recordFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), intent.amount, 0, user);
+
+        vm.prank(relayer);
+        vm.expectRevert(abi.encodeWithSelector(HubSettlement.FillEvidenceLockMismatch.selector, intentId));
+        settlement.recordFillEvidence(intentId, Constants.INTENT_BORROW, user, address(hubUSDC), intent.amount - 1, 0, relayer);
+    }
+
+    function test_tokenRegistryReRegisterHubTokenClearsOldSpokeMapping() external {
+        MockERC20 replacementSpokeToken = new MockERC20("Spoke USDC v2", "USDC2", 6);
+        ITokenRegistry.TokenConfig memory cfg = registry.getConfigByHub(address(hubUSDC));
+
+        registry.registerToken(
+            ITokenRegistry.TokenConfig({
+                hubToken: address(hubUSDC),
+                spokeToken: address(replacementSpokeToken),
+                decimals: cfg.decimals,
+                risk: cfg.risk,
+                bridgeAdapterId: cfg.bridgeAdapterId,
+                enabled: cfg.enabled
+            })
+        );
+
+        assertEq(registry.getHubTokenBySpoke(address(spokeUSDC)), address(0), "old spoke mapping should be cleared");
+        assertEq(
+            registry.getHubTokenBySpoke(address(replacementSpokeToken)),
+            address(hubUSDC),
+            "replacement spoke mapping should point to hub token"
+        );
+    }
+
+    function test_tokenRegistryRejectsSpokeTokenCollisionAcrossHubAssets() external {
+        ITokenRegistry.TokenConfig memory cfg = registry.getConfigByHub(address(hubWETH));
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                TokenRegistry.SpokeTokenAlreadyRegistered.selector, address(spokeUSDC), address(hubUSDC)
+            )
+        );
+        registry.registerToken(
+            ITokenRegistry.TokenConfig({
+                hubToken: address(hubWETH),
+                spokeToken: address(spokeUSDC),
+                decimals: cfg.decimals,
+                risk: cfg.risk,
+                bridgeAdapterId: cfg.bridgeAdapterId,
+                enabled: cfg.enabled
+            })
+        );
+    }
+
+    function test_adminSettersRejectZeroAddress() external {
+        vm.expectRevert(abi.encodeWithSelector(HubMoneyMarket.InvalidRiskManager.selector, address(0)));
+        market.setRiskManager(address(0));
+
+        vm.expectRevert(abi.encodeWithSelector(HubMoneyMarket.InvalidSettlement.selector, address(0)));
+        market.setSettlement(address(0));
+
+        vm.expectRevert(abi.encodeWithSelector(HubLockManager.InvalidSettlement.selector, address(0)));
+        lockManager.setSettlement(address(0));
+
+        vm.expectRevert(abi.encodeWithSelector(HubRiskManager.InvalidLockManager.selector, address(0)));
+        risk.setLockManager(address(0));
+
+        vm.expectRevert(abi.encodeWithSelector(SpokePortal.InvalidBridgeAdapter.selector, address(0)));
+        portal.setBridgeAdapter(address(0));
+
+        vm.expectRevert(abi.encodeWithSelector(SpokePortal.InvalidHubRecipient.selector, address(0)));
+        portal.setHubRecipient(address(0));
+
+        vm.expectRevert(abi.encodeWithSelector(HubSettlement.InvalidVerifier.selector, address(0)));
+        settlement.setVerifier(Verifier(address(0)));
+
+        vm.expectRevert(abi.encodeWithSelector(HubSettlement.InvalidMoneyMarket.selector, address(0)));
+        settlement.setMoneyMarket(HubMoneyMarket(address(0)));
+
+        vm.expectRevert(abi.encodeWithSelector(HubSettlement.InvalidCustody.selector, address(0)));
+        settlement.setCustody(HubCustody(address(0)));
+
+        vm.expectRevert(abi.encodeWithSelector(HubSettlement.InvalidLockManager.selector, address(0)));
+        settlement.setLockManager(HubLockManager(address(0)));
     }
 
     function test_lockConcurrencyReservationsPreventOverBorrow() external {

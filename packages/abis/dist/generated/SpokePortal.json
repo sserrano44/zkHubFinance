@@ -734,6 +734,17 @@
     },
     {
         "type": "error",
+        "name": "InvalidBridgeAdapter",
+        "inputs": [
+            {
+                "name": "adapter",
+                "type": "address",
+                "internalType": "address"
+            }
+        ]
+    },
+    {
+        "type": "error",
         "name": "InvalidFee",
         "inputs": [
             {
@@ -745,6 +756,17 @@
                 "name": "maxFee",
                 "type": "uint256",
                 "internalType": "uint256"
+            }
+        ]
+    },
+    {
+        "type": "error",
+        "name": "InvalidHubRecipient",
+        "inputs": [
+            {
+                "name": "recipient",
+                "type": "address",
+                "internalType": "address"
             }
         ]
     },

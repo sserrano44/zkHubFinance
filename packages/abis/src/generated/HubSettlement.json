@@ -1111,12 +1111,71 @@
   },
   {
     "type": "error",
+    "name": "FillEvidenceLockExpired",
+    "inputs": [
+      {
+        "name": "intentId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "expiry",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "FillEvidenceLockMismatch",
+    "inputs": [
+      {
+        "name": "intentId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "FillEvidenceLockNotActive",
+    "inputs": [
+      {
+        "name": "intentId",
+        "type": "bytes32",
+        "internalType": "bytes32"
+      },
+      {
+        "name": "status",
+        "type": "uint8",
+        "internalType": "uint8"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "FillEvidenceMismatch",
     "inputs": [
       {
         "name": "intentId",
         "type": "bytes32",
         "internalType": "bytes32"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "FillEvidenceRelayerMismatch",
+    "inputs": [
+      {
+        "name": "caller",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "relayer",
+        "type": "address",
+        "internalType": "address"
       }
     ]
   },
@@ -1149,6 +1208,17 @@
   },
   {
     "type": "error",
+    "name": "InvalidCustody",
+    "inputs": [
+      {
+        "name": "custody",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InvalidHubChain",
     "inputs": [
       {
@@ -1165,8 +1235,41 @@
   },
   {
     "type": "error",
+    "name": "InvalidLockManager",
+    "inputs": [
+      {
+        "name": "lockManager",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "InvalidMoneyMarket",
+    "inputs": [
+      {
+        "name": "market",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "InvalidProof",
     "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "InvalidVerifier",
+    "inputs": [
+      {
+        "name": "verifier",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
   },
   {
     "type": "error",

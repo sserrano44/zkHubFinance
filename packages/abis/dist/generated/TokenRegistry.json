@@ -633,5 +633,21 @@
         "type": "error",
         "name": "InvalidTokenAddress",
         "inputs": []
+    },
+    {
+        "type": "error",
+        "name": "SpokeTokenAlreadyRegistered",
+        "inputs": [
+            {
+                "name": "spokeToken",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "hubToken",
+                "type": "address",
+                "internalType": "address"
+            }
+        ]
     }
 ]

@@ -2,8 +2,9 @@
 pragma solidity ^0.8.24;
 
 import {Ownable} from "@openzeppelin/access/Ownable.sol";
+import {IPriceOracle} from "../interfaces/IPriceOracle.sol";
 
-contract MockOracle is Ownable {
+contract MockOracle is Ownable, IPriceOracle {
     mapping(address => uint256) public pricesE8;
 
     event PriceUpdated(address indexed asset, uint256 priceE8);

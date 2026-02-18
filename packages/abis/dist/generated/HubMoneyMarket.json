@@ -1091,6 +1091,28 @@
     },
     {
         "type": "error",
+        "name": "InvalidRiskManager",
+        "inputs": [
+            {
+                "name": "riskManager",
+                "type": "address",
+                "internalType": "address"
+            }
+        ]
+    },
+    {
+        "type": "error",
+        "name": "InvalidSettlement",
+        "inputs": [
+            {
+                "name": "settlement",
+                "type": "address",
+                "internalType": "address"
+            }
+        ]
+    },
+    {
+        "type": "error",
         "name": "MarketAlreadyInitialized",
         "inputs": [
             {

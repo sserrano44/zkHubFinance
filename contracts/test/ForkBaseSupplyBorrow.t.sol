@@ -10,7 +10,8 @@ import {TokenRegistry} from "../src/hub/TokenRegistry.sol";
 import {MockOracle} from "../src/mocks/MockOracle.sol";
 import {KinkInterestRateModel} from "../src/hub/KinkInterestRateModel.sol";
 import {HubMoneyMarket} from "../src/hub/HubMoneyMarket.sol";
-import {HubRiskManager, IPriceOracle} from "../src/hub/HubRiskManager.sol";
+import {HubRiskManager} from "../src/hub/HubRiskManager.sol";
+import {IPriceOracle} from "../src/interfaces/IPriceOracle.sol";
 
 interface IERC20Minimal {
     function approve(address spender, uint256 amount) external returns (bool);

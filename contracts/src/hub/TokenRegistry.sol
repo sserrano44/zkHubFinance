@@ -29,6 +29,7 @@ contract TokenRegistry is AccessControl, ITokenRegistry {
 
     error InvalidTokenAddress();
     error InvalidRiskParams();
+    error SpokeTokenAlreadyRegistered(address spokeToken, address hubToken);
 
     constructor(address admin) {
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
@@ -73,6 +74,16 @@ contract TokenRegistry is AccessControl, ITokenRegistry {
             revert InvalidTokenAddress();
         }
         _validateRisk(config.risk);
+
+        TokenConfig storage previous = _byHubToken[config.hubToken];
+        if (previous.hubToken != address(0) && previous.spokeToken != address(0) && previous.spokeToken != config.spokeToken) {
+            delete _hubBySpoke[previous.spokeToken];
+        }
+
+        address existingHub = _hubBySpoke[config.spokeToken];
+        if (existingHub != address(0) && existingHub != config.hubToken) {
+            revert SpokeTokenAlreadyRegistered(config.spokeToken, existingHub);
+        }
 
         _byHubToken[config.hubToken] = config;
         _hubBySpoke[config.spokeToken] = config.hubToken;

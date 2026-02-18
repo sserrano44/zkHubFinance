@@ -64,6 +64,14 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
     error FillEvidenceMismatch(bytes32 intentId);
     error FillEvidenceAlreadyExists(bytes32 intentId);
     error FillEvidenceAlreadyConsumed(bytes32 intentId);
+    error FillEvidenceRelayerMismatch(address caller, address relayer);
+    error FillEvidenceLockNotActive(bytes32 intentId, uint8 status);
+    error FillEvidenceLockExpired(bytes32 intentId, uint256 expiry);
+    error FillEvidenceLockMismatch(bytes32 intentId);
+    error InvalidVerifier(address verifier);
+    error InvalidMoneyMarket(address market);
+    error InvalidCustody(address custody);
+    error InvalidLockManager(address lockManager);
 
     constructor(address admin, IVerifier verifier_, HubMoneyMarket moneyMarket_, HubCustody custody_, HubLockManager lockManager_) {
         _grantRole(DEFAULT_ADMIN_ROLE, admin);
@@ -76,21 +84,25 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
     }
 
     function setVerifier(IVerifier verifier_) external onlyRole(SETTLEMENT_ADMIN_ROLE) {
+        if (address(verifier_) == address(0)) revert InvalidVerifier(address(verifier_));
         verifier = verifier_;
         emit VerifierSet(address(verifier_));
     }
 
     function setMoneyMarket(HubMoneyMarket moneyMarket_) external onlyRole(SETTLEMENT_ADMIN_ROLE) {
+        if (address(moneyMarket_) == address(0)) revert InvalidMoneyMarket(address(moneyMarket_));
         moneyMarket = moneyMarket_;
         emit MoneyMarketSet(address(moneyMarket_));
     }
 
     function setCustody(HubCustody custody_) external onlyRole(SETTLEMENT_ADMIN_ROLE) {
+        if (address(custody_) == address(0)) revert InvalidCustody(address(custody_));
         custody = custody_;
         emit CustodySet(address(custody_));
     }
 
     function setLockManager(HubLockManager lockManager_) external onlyRole(SETTLEMENT_ADMIN_ROLE) {
+        if (address(lockManager_) == address(0)) revert InvalidLockManager(address(lockManager_));
         lockManager = lockManager_;
         emit LockManagerSet(address(lockManager_));
     }
@@ -112,6 +124,36 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
         uint256 fee,
         address relayer
     ) external onlyRole(RELAYER_ROLE) {
+        if (relayer != msg.sender) {
+            revert FillEvidenceRelayerMismatch(msg.sender, relayer);
+        }
+
+        (
+            ,
+            address lockUser,
+            uint8 lockIntentType,
+            address lockAsset,
+            uint256 lockAmount,
+            address lockRelayer,
+            ,
+            uint256 lockExpiry,
+            uint8 lockStatus
+        ) = lockManager.locks(intentId);
+
+        uint8 lockActiveStatus = lockManager.LOCK_STATUS_ACTIVE();
+        if (lockStatus != lockActiveStatus) {
+            revert FillEvidenceLockNotActive(intentId, lockStatus);
+        }
+        if (block.timestamp > lockExpiry) {
+            revert FillEvidenceLockExpired(intentId, lockExpiry);
+        }
+        if (
+            lockIntentType != intentType || lockUser != user || lockAsset != hubAsset || lockAmount != amount
+                || lockRelayer != relayer
+        ) {
+            revert FillEvidenceLockMismatch(intentId);
+        }
+
         FillEvidence storage ev = fillEvidence[intentId];
         if (ev.exists) {
             if (ev.consumed) revert FillEvidenceAlreadyConsumed(intentId);

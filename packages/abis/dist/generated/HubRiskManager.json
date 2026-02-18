@@ -256,6 +256,32 @@
     },
     {
         "type": "function",
+        "name": "maxOraclePriceE8",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "",
+                "type": "uint256",
+                "internalType": "uint256"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
+        "name": "minOraclePriceE8",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "",
+                "type": "uint256",
+                "internalType": "uint256"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
         "name": "moneyMarket",
         "inputs": [],
         "outputs": [
@@ -347,6 +373,24 @@
                 "name": "lockManager_",
                 "type": "address",
                 "internalType": "address"
+            }
+        ],
+        "outputs": [],
+        "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
+        "name": "setOracleBounds",
+        "inputs": [
+            {
+                "name": "minPriceE8",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "maxPriceE8",
+                "type": "uint256",
+                "internalType": "uint256"
             }
         ],
         "outputs": [],
@@ -476,6 +520,25 @@
     },
     {
         "type": "event",
+        "name": "OracleBoundsSet",
+        "inputs": [
+            {
+                "name": "minPriceE8",
+                "type": "uint256",
+                "indexed": false,
+                "internalType": "uint256"
+            },
+            {
+                "name": "maxPriceE8",
+                "type": "uint256",
+                "indexed": false,
+                "internalType": "uint256"
+            }
+        ],
+        "anonymous": false
+    },
+    {
+        "type": "event",
         "name": "OwnershipTransferred",
         "inputs": [
             {
@@ -535,6 +598,49 @@
             }
         ],
         "anonymous": false
+    },
+    {
+        "type": "error",
+        "name": "InvalidLockManager",
+        "inputs": [
+            {
+                "name": "lockManager",
+                "type": "address",
+                "internalType": "address"
+            }
+        ]
+    },
+    {
+        "type": "error",
+        "name": "InvalidOracleBounds",
+        "inputs": [
+            {
+                "name": "minPriceE8",
+                "type": "uint256",
+                "internalType": "uint256"
+            },
+            {
+                "name": "maxPriceE8",
+                "type": "uint256",
+                "internalType": "uint256"
+            }
+        ]
+    },
+    {
+        "type": "error",
+        "name": "InvalidOraclePrice",
+        "inputs": [
+            {
+                "name": "asset",
+                "type": "address",
+                "internalType": "address"
+            },
+            {
+                "name": "priceE8",
+                "type": "uint256",
+                "internalType": "uint256"
+            }
+        ]
     },
     {
         "type": "error",

@@ -318,6 +318,11 @@
     },
     {
         "type": "error",
+        "name": "MulDivOverflow",
+        "inputs": []
+    },
+    {
+        "type": "error",
         "name": "OwnableInvalidOwner",
         "inputs": [
             {

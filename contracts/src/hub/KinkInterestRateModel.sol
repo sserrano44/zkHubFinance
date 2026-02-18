@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {Ownable} from "@openzeppelin/access/Ownable.sol";
 import {Constants} from "../libraries/Constants.sol";
+import {MulDiv} from "../libraries/MulDiv.sol";
 import {IInterestRateModel} from "../interfaces/IInterestRateModel.sol";
 
 contract KinkInterestRateModel is Ownable, IInterestRateModel {
@@ -61,8 +62,8 @@ contract KinkInterestRateModel is Ownable, IInterestRateModel {
     function getSupplyRate(address asset, uint256 utilizationRay) external view returns (uint256) {
         RateConfig memory config = _getConfig(asset);
         uint256 borrowRate = _borrowRate(config, utilizationRay);
-        return (borrowRate * utilizationRay / Constants.RAY)
-            * (Constants.RAY - config.reserveFactorRay) / Constants.RAY;
+        uint256 grossSupplyRateRay = MulDiv.mulDiv(borrowRate, utilizationRay, Constants.RAY);
+        return MulDiv.mulDiv(grossSupplyRateRay, Constants.RAY - config.reserveFactorRay, Constants.RAY);
     }
 
     function _getConfig(address asset) private view returns (RateConfig memory config) {

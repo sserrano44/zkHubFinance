@@ -75,6 +75,8 @@ contract HubMoneyMarket is Ownable, Pausable, ReentrancyGuard, IHubMoneyMarket {
     error BorrowNotAllowed();
     error WithdrawNotAllowed();
     error NotLiquidatable();
+    error InvalidRiskManager(address riskManager);
+    error InvalidSettlement(address settlement);
 
     modifier onlySettlement() {
         if (msg.sender != settlement) revert NotSettlement(msg.sender);
@@ -97,11 +99,13 @@ contract HubMoneyMarket is Ownable, Pausable, ReentrancyGuard, IHubMoneyMarket {
     }
 
     function setRiskManager(address riskManager_) external onlyOwner {
+        if (riskManager_ == address(0)) revert InvalidRiskManager(riskManager_);
         riskManager = riskManager_;
         emit RiskManagerSet(riskManager_);
     }
 
     function setSettlement(address settlement_) external onlyOwner {
+        if (settlement_ == address(0)) revert InvalidSettlement(settlement_);
         settlement = settlement_;
         emit SettlementSet(settlement_);
     }
@@ -452,9 +456,9 @@ contract HubMoneyMarket is Ownable, Pausable, ReentrancyGuard, IHubMoneyMarket {
         uint8 debtDecimals = ITokenRegistry(tokenRegistry).getConfigByHub(debtAsset).decimals;
         uint8 collateralDecimals = ITokenRegistry(tokenRegistry).getConfigByHub(collateralAsset).decimals;
 
-        uint256 debtValueE8 = repayAmount * debtPriceE8 / (10 ** debtDecimals);
-        return debtValueE8 * liquidationBonusBps * (10 ** collateralDecimals)
-            / (collateralPriceE8 * Constants.BPS);
+        uint256 debtValueWithBonusE8 =
+            repayAmount * debtPriceE8 * liquidationBonusBps / ((10 ** debtDecimals) * Constants.BPS);
+        return debtValueWithBonusE8 * (10 ** collateralDecimals) / collateralPriceE8;
     }
 
     function _boundCollateralByUserShares(

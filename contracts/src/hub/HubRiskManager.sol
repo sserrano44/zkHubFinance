@@ -8,10 +8,7 @@ import {ITokenRegistry} from "../interfaces/ITokenRegistry.sol";
 import {IHubMoneyMarket} from "../interfaces/IHubMoneyMarket.sol";
 import {IHubLockManager} from "../interfaces/IHubLockManager.sol";
 import {IHubRiskManager} from "../interfaces/IHubRiskManager.sol";
-
-interface IPriceOracle {
-    function getPrice(address asset) external view returns (uint256);
-}
+import {IPriceOracle} from "../interfaces/IPriceOracle.sol";
 
 contract HubRiskManager is Ownable, IHubRiskManager {
     ITokenRegistry public immutable tokenRegistry;
@@ -19,10 +16,13 @@ contract HubRiskManager is Ownable, IHubRiskManager {
     IPriceOracle public immutable oracle;
 
     address public lockManager;
+    uint256 public minOraclePriceE8 = 1;
+    uint256 public maxOraclePriceE8 = type(uint256).max;
 
     mapping(address => DataTypes.RiskParams) public riskParams;
 
     event LockManagerSet(address indexed lockManager);
+    event OracleBoundsSet(uint256 minPriceE8, uint256 maxPriceE8);
     event RiskParamsSet(
         address indexed asset,
         uint256 ltvBps,
@@ -33,6 +33,9 @@ contract HubRiskManager is Ownable, IHubRiskManager {
     );
 
     error InvalidRiskParams();
+    error InvalidLockManager(address lockManager);
+    error InvalidOracleBounds(uint256 minPriceE8, uint256 maxPriceE8);
+    error InvalidOraclePrice(address asset, uint256 priceE8);
 
     constructor(address owner_, ITokenRegistry tokenRegistry_, IHubMoneyMarket moneyMarket_, IPriceOracle oracle_)
         Ownable(owner_)
@@ -43,8 +46,16 @@ contract HubRiskManager is Ownable, IHubRiskManager {
     }
 
     function setLockManager(address lockManager_) external onlyOwner {
+        if (lockManager_ == address(0)) revert InvalidLockManager(lockManager_);
         lockManager = lockManager_;
         emit LockManagerSet(lockManager_);
+    }
+
+    function setOracleBounds(uint256 minPriceE8, uint256 maxPriceE8) external onlyOwner {
+        if (minPriceE8 == 0 || maxPriceE8 < minPriceE8) revert InvalidOracleBounds(minPriceE8, maxPriceE8);
+        minOraclePriceE8 = minPriceE8;
+        maxOraclePriceE8 = maxPriceE8;
+        emit OracleBoundsSet(minPriceE8, maxPriceE8);
     }
 
     function setRiskParams(address asset, DataTypes.RiskParams calldata params) external onlyOwner {
@@ -132,7 +143,7 @@ contract HubRiskManager is Ownable, IHubRiskManager {
     }
 
     function getAssetPriceE8(address asset) external view returns (uint256) {
-        return oracle.getPrice(asset);
+        return _priceE8(asset);
     }
 
     function getLiquidationBonusBps(address asset) external view returns (uint256) {
@@ -158,7 +169,7 @@ contract HubRiskManager is Ownable, IHubRiskManager {
             if (!cfg.enabled) continue;
 
             uint256 decimalsFactor = 10 ** cfg.decimals;
-            uint256 priceE8 = oracle.getPrice(asset);
+            uint256 priceE8 = _priceE8(asset);
 
             uint256 supplyAmount = moneyMarket.getUserSupply(user, asset);
             uint256 debtAmount = moneyMarket.getUserDebt(user, asset);
@@ -176,12 +187,9 @@ contract HubRiskManager is Ownable, IHubRiskManager {
             }
 
             DataTypes.RiskParams memory risk = _risk(asset);
-
-            uint256 supplyValue = supplyAmount * priceE8 / decimalsFactor;
-            uint256 debtValue = debtAmount * priceE8 / decimalsFactor;
-
-            adjustedCollateralValue += supplyValue * risk.liquidationThresholdBps / Constants.BPS;
-            totalDebtValue += debtValue;
+            uint256 adjustedPriceE8 = priceE8 * risk.liquidationThresholdBps / Constants.BPS;
+            adjustedCollateralValue += supplyAmount * adjustedPriceE8 / decimalsFactor;
+            totalDebtValue += debtAmount * priceE8 / decimalsFactor;
         }
 
         if (totalDebtValue == 0) {
@@ -220,5 +228,12 @@ contract HubRiskManager is Ownable, IHubRiskManager {
 
     function _min(uint256 a, uint256 b) internal pure returns (uint256) {
         return a < b ? a : b;
+    }
+
+    function _priceE8(address asset) internal view returns (uint256 priceE8) {
+        priceE8 = oracle.getPrice(asset);
+        if (priceE8 < minOraclePriceE8 || priceE8 > maxOraclePriceE8) {
+            revert InvalidOraclePrice(asset, priceE8);
+        }
     }
 }

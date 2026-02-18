@@ -36,6 +36,8 @@ const SPOKE_ENV_PREFIX = SPOKE_NETWORK.toUpperCase();
 const SPOKE_NETWORK_CONFIG = SPOKE_NETWORK_DEFAULTS[SPOKE_NETWORK];
 const SPOKE_CHAIN_ID = Number(process.env[`SPOKE_${SPOKE_ENV_PREFIX}_CHAIN_ID`] ?? SPOKE_NETWORK_CONFIG.chainId);
 const SPOKE_RPC_URL = process.env[`SPOKE_${SPOKE_ENV_PREFIX}_RPC_URL`] ?? SPOKE_NETWORK_CONFIG.rpcUrl;
+const runtimeEnv = (process.env.ZKHUB_ENV ?? process.env.NODE_ENV ?? "development").toLowerCase();
+const isProduction = runtimeEnv === "production";
 const HUB_VERIFIER_DEV_MODE = (process.env.HUB_VERIFIER_DEV_MODE ?? "1") !== "0";
 const HUB_DEV_PROOF_TEXT = process.env.HUB_DEV_PROOF_TEXT ?? "ZKHUB_DEV_PROOF";
 const HUB_GROTH16_VERIFIER_ADDRESS = process.env.HUB_GROTH16_VERIFIER_ADDRESS ?? "";
@@ -50,6 +52,9 @@ if (!SPOKE_RPC_URL) {
   throw new Error(
     `Missing SPOKE_${SPOKE_ENV_PREFIX}_RPC_URL for SPOKE_NETWORK=${SPOKE_NETWORK}`
   );
+}
+if (isProduction && HUB_VERIFIER_DEV_MODE) {
+  throw new Error("HUB_VERIFIER_DEV_MODE must be 0 when ZKHUB_ENV/NODE_ENV is production");
 }
 
 const DEPLOYER_PRIVATE_KEY =

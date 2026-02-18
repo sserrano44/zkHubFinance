@@ -50,6 +50,7 @@ contract HubLockManager is Ownable, Pausable, ReentrancyGuard {
     error UnauthorizedSettlement(address caller);
     error LockMismatch(bytes32 intentId);
     error UnsupportedAsset(address token);
+    error InvalidSettlement(address settlement);
 
     modifier onlySettlement() {
         if (msg.sender != settlement) revert UnauthorizedSettlement(msg.sender);
@@ -70,6 +71,7 @@ contract HubLockManager is Ownable, Pausable, ReentrancyGuard {
     }
 
     function setSettlement(address settlement_) external onlyOwner {
+        if (settlement_ == address(0)) revert InvalidSettlement(settlement_);
         settlement = settlement_;
         emit SettlementSet(settlement_);
     }

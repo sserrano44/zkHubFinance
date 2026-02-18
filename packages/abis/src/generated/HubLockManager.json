@@ -796,6 +796,17 @@
   },
   {
     "type": "error",
+    "name": "InvalidSettlement",
+    "inputs": [
+      {
+        "name": "settlement",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
     "name": "LockAlreadyExists",
     "inputs": [
       {

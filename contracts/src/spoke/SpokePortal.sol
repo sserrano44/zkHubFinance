@@ -80,17 +80,21 @@ contract SpokePortal is Ownable, Pausable, ReentrancyGuard {
     error InvalidOutputChain(uint256 outputChainId, uint256 chainId);
     error AdapterNotSet();
     error HubRecipientNotSet();
+    error InvalidBridgeAdapter(address adapter);
+    error InvalidHubRecipient(address recipient);
 
     constructor(address owner_, uint256 hubChainId_) Ownable(owner_) {
         hubChainId = hubChainId_;
     }
 
     function setBridgeAdapter(address bridgeAdapter_) external onlyOwner {
+        if (bridgeAdapter_ == address(0)) revert InvalidBridgeAdapter(bridgeAdapter_);
         bridgeAdapter = IBridgeAdapter(bridgeAdapter_);
         emit BridgeAdapterSet(bridgeAdapter_);
     }
 
     function setHubRecipient(address hubRecipient_) external onlyOwner {
+        if (hubRecipient_ == address(0)) revert InvalidHubRecipient(hubRecipient_);
         hubRecipient = hubRecipient_;
         emit HubRecipientSet(hubRecipient_);
     }
