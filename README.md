@@ -67,11 +67,13 @@ pnpm dev
 ### Hub (Base)
 - `HubMoneyMarket`: share-based supply/debt accounting, interest accrual, settlement hooks, liquidation skeleton.
 - `HubRiskManager`: HF math + lock/borrow/withdraw checks + caps.
+- `ChainlinkPriceOracle`: Chainlink `AggregatorV3` adapter with heartbeat/staleness checks, bounds, and decimal normalization to `e8`.
 - `HubIntentInbox`: EIP-712 validation + nonce consumption.
 - `HubLockManager`: mandatory lock/reservation for borrow/withdraw intents.
 - `HubSettlement`: batched settlement with verifier, replay protection, lock/fill/deposit checks.
 - `Verifier`: `DEV_MODE` dummy proof support + real verifier slot.
 - `HubCustody`: bridged funds intake + controlled release to market.
+- `CanonicalBridgeReceiverAdapter`: hub-side bridge attestation entrypoint with `ATTESTER_ROLE`.
 - `TokenRegistry`: token mappings (hub/spoke), decimals, risk, bridge adapter id.
 
 ### Spoke (Worldchain)
@@ -84,7 +86,7 @@ pnpm dev
 ### Supply / Repay
 1. User calls `SpokePortal.initiateSupply` or `initiateRepay`.
 2. Relayer watches spoke events.
-3. Relayer mints bridged amount on hub (mock canonical bridge) + registers custody deposit.
+3. Canonical bridge attestation is forwarded through `CanonicalBridgeReceiverAdapter` to `HubCustody.registerBridgedDeposit`.
 4. Prover batches deposit actions and submits settlement proof.
 5. Hub settlement credits supply or repays debt.
 
@@ -107,11 +109,20 @@ forge test --offline
 Tests cover:
 - Interest accrual invariants (indices monotonic, shares-to-assets behavior)
 - HF checks for borrow/withdraw locks
+- Chainlink oracle adapter checks (staleness, non-positive answers, decimal normalization)
+- Risk manager oracle bound enforcement
 - Supply+borrow lock/fill/settle happy path
 - Replay protections (batch, intent, fill)
 - Failure paths (missing lock/fill, expired intent)
 - Settlement atomicity rollback on mid-batch failure
 - Settlement max action cap enforcement (`MAX_BATCH_ACTIONS = 50`)
+
+Run focused oracle/risk hardening tests:
+
+```bash
+cd contracts
+forge test --offline --match-contract ChainlinkOracleAndRiskBoundsTest -vv
+```
 
 ### Base fork integration test (ETH supply + USDC borrow)
 
@@ -268,7 +279,7 @@ Optional env overrides for prepare script:
 4. `ENABLE_FORGE_BROADCAST` (default `1`; set `0` only for debug dry-runs)
 
 ## CI
-- GitHub Actions workflow: `/Users/sebas/projects/zkhub/.github/workflows/ci.yml`
+- GitHub Actions workflow: `.github/workflows/ci.yml`
 - Jobs:
   - `contracts`: `forge build` + `forge test --offline`
   - `monorepo-build`: install deps, regenerate ABIs, build all workspaces
@@ -302,10 +313,24 @@ After local deploy:
   - `HUB_VERIFIER_DEV_MODE=0`: requires `HUB_GROTH16_VERIFIER_ADDRESS` and deploys `Groth16VerifierAdapter` + prod `Verifier`.
 
 ## Production wiring notes
+- Configure oracle stack (recommended):
+  - Deploy `ChainlinkPriceOracle(owner)`.
+  - For each supported hub asset, call:
+    - `ChainlinkPriceOracle.setFeed(asset, feed, heartbeat, minPriceE8, maxPriceE8)`
+  - Deploy `HubRiskManager(owner, tokenRegistry, moneyMarket, chainlinkOracle)`.
+  - Optionally set global bounds on risk manager:
+    - `HubRiskManager.setOracleBounds(minPriceE8, maxPriceE8)`
+- Oracle notes:
+  - `ChainlinkPriceOracle` rejects stale rounds (`block.timestamp - updatedAt > heartbeat`), non-positive answers, and invalid rounds.
+  - Feed decimals are normalized to protocol-wide `e8`.
+  - Keep heartbeat and bounds conservative per asset and chain.
 - Configure `CanonicalBridgeAdapter`:
   - `setAllowedCaller(<SpokePortal>, true)`
   - `setRoute(localToken, canonicalBridge, remoteToken, minGasLimit, true)` per token
   - `SpokePortal.setBridgeAdapter(<CanonicalBridgeAdapter>)`
+- Configure hub-side bridge receiver:
+  - grant `ATTESTER_ROLE` on `CanonicalBridgeReceiverAdapter` to trusted attesters
+  - grant `CANONICAL_BRIDGE_RECEIVER_ROLE` on `HubCustody` to `CanonicalBridgeReceiverAdapter`
 - For settlement verifier, deploy generated Groth16 verifier bytecode and wire it through `Groth16VerifierAdapter`:
   - deploy generated verifier (from `snarkjs zkey export solidityverifier`)
   - deploy `Groth16VerifierAdapter(owner, generatedVerifier)`
@@ -323,8 +348,8 @@ After local deploy:
 - Bridge integration is mocked locally; production must use canonical bridge adapters and real event commitments.
 
 ## Production readiness
-- Detailed execution plan: `/Users/sebas/projects/zkhub/PRODUCTION_READINESS_PLAN.md`
-- Detailed technical specification: `/Users/sebas/projects/zkhub/TECHNICAL_SPEC.md`
+- Detailed execution plan: `PRODUCTION_READINESS_PLAN.md`
+- Detailed technical specification: `TECHNICAL_SPEC.md`
 
 ## Operational notes
 - If your shell cannot write to default Corepack/Pnpm home directories, set:
