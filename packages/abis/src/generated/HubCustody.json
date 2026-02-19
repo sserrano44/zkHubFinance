@@ -88,6 +88,11 @@
     "name": "consumeDepositToMarket",
     "inputs": [
       {
+        "name": "originChainId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
         "name": "depositId",
         "type": "uint256",
         "internalType": "uint256"
@@ -162,6 +167,11 @@
         "name": "",
         "type": "uint256",
         "internalType": "uint256"
+      },
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
       }
     ],
     "outputs": [
@@ -177,6 +187,11 @@
     "type": "function",
     "name": "deposits",
     "inputs": [
+      {
+        "name": "",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
       {
         "name": "",
         "type": "uint256",
@@ -568,6 +583,11 @@
     "name": "DepositAlreadyConsumed",
     "inputs": [
       {
+        "name": "originChainId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
         "name": "depositId",
         "type": "uint256",
         "internalType": "uint256"
@@ -578,6 +598,11 @@
     "type": "error",
     "name": "DepositAlreadyExists",
     "inputs": [
+      {
+        "name": "originChainId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
       {
         "name": "depositId",
         "type": "uint256",
@@ -590,6 +615,11 @@
     "name": "DepositMismatch",
     "inputs": [
       {
+        "name": "originChainId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
+      {
         "name": "depositId",
         "type": "uint256",
         "internalType": "uint256"
@@ -600,6 +630,11 @@
     "type": "error",
     "name": "DepositNotFound",
     "inputs": [
+      {
+        "name": "originChainId",
+        "type": "uint256",
+        "internalType": "uint256"
+      },
       {
         "name": "depositId",
         "type": "uint256",

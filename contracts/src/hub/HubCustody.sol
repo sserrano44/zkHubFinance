@@ -19,9 +19,9 @@ contract HubCustody is AccessControl {
         bool consumed;
     }
 
-    mapping(uint256 => BridgedDeposit) public deposits;
+    mapping(uint256 => mapping(uint256 => BridgedDeposit)) public deposits;
     mapping(bytes32 => bool) public usedAttestation;
-    mapping(uint256 => bytes32) public depositAttestationKey;
+    mapping(uint256 => mapping(uint256 => bytes32)) public depositAttestationKey;
 
     event BridgedDepositRegistered(
         uint256 indexed depositId,
@@ -36,10 +36,10 @@ contract HubCustody is AccessControl {
     );
     event BridgedDepositConsumed(uint256 indexed depositId, address indexed market);
 
-    error DepositAlreadyExists(uint256 depositId);
-    error DepositNotFound(uint256 depositId);
-    error DepositAlreadyConsumed(uint256 depositId);
-    error DepositMismatch(uint256 depositId);
+    error DepositAlreadyExists(uint256 originChainId, uint256 depositId);
+    error DepositNotFound(uint256 originChainId, uint256 depositId);
+    error DepositAlreadyConsumed(uint256 originChainId, uint256 depositId);
+    error DepositMismatch(uint256 originChainId, uint256 depositId);
     error InvalidOriginChainId(uint256 originChainId);
     error InvalidOriginTxHash();
     error AttestationAlreadyUsed(bytes32 attestationKey);
@@ -69,14 +69,16 @@ contract HubCustody is AccessControl {
     ) external onlyRole(CANONICAL_BRIDGE_RECEIVER_ROLE) {
         if (originChainId == 0) revert InvalidOriginChainId(originChainId);
         if (originTxHash == bytes32(0)) revert InvalidOriginTxHash();
-        if (deposits[depositId].hubAsset != address(0)) revert DepositAlreadyExists(depositId);
+        if (deposits[originChainId][depositId].hubAsset != address(0)) {
+            revert DepositAlreadyExists(originChainId, depositId);
+        }
 
         bytes32 attestationKey = attestationKeyFor(originChainId, originTxHash, originLogIndex, depositId);
         if (usedAttestation[attestationKey]) revert AttestationAlreadyUsed(attestationKey);
         usedAttestation[attestationKey] = true;
-        depositAttestationKey[depositId] = attestationKey;
+        depositAttestationKey[originChainId][depositId] = attestationKey;
 
-        deposits[depositId] = BridgedDeposit({
+        deposits[originChainId][depositId] = BridgedDeposit({
             intentType: intentType,
             user: user,
             hubAsset: hubAsset,
@@ -98,6 +100,7 @@ contract HubCustody is AccessControl {
     }
 
     function consumeDepositToMarket(
+        uint256 originChainId,
         uint256 depositId,
         uint8 expectedIntentType,
         address expectedUser,
@@ -105,18 +108,18 @@ contract HubCustody is AccessControl {
         uint256 expectedAmount,
         address market
     ) external onlyRole(SETTLEMENT_ROLE) returns (BridgedDeposit memory dep) {
-        dep = deposits[depositId];
-        if (dep.hubAsset == address(0)) revert DepositNotFound(depositId);
-        if (dep.consumed) revert DepositAlreadyConsumed(depositId);
+        dep = deposits[originChainId][depositId];
+        if (dep.hubAsset == address(0)) revert DepositNotFound(originChainId, depositId);
+        if (dep.consumed) revert DepositAlreadyConsumed(originChainId, depositId);
 
         if (
             dep.intentType != expectedIntentType || dep.user != expectedUser || dep.hubAsset != expectedHubAsset
                 || dep.amount != expectedAmount
         ) {
-            revert DepositMismatch(depositId);
+            revert DepositMismatch(originChainId, depositId);
         }
 
-        deposits[depositId].consumed = true;
+        deposits[originChainId][depositId].consumed = true;
         IERC20(dep.hubAsset).safeTransfer(market, dep.amount);
 
         emit BridgedDepositConsumed(depositId, market);

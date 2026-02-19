@@ -50,6 +50,7 @@ const INDEXER_PORT = Number(process.env.E2E_INDEXER_PORT ?? "4030");
 const RELAYER_PORT = Number(process.env.E2E_RELAYER_PORT ?? "4040");
 const PROVER_PORT = Number(process.env.E2E_PROVER_PORT ?? "4050");
 const E2E_PROVER_MODE = process.env.E2E_PROVER_MODE ?? process.env.PROVER_MODE ?? "dev";
+const PROVER_MIN_NATIVE_ETH = process.env.PROVER_MIN_NATIVE_ETH ?? "0.05";
 const INDEXER_API_URL = `http://127.0.0.1:${INDEXER_PORT}`;
 const RELAYER_API_URL = `http://127.0.0.1:${RELAYER_PORT}`;
 const PROVER_API_URL = `http://127.0.0.1:${PROVER_PORT}`;
@@ -154,7 +155,7 @@ async function main() {
     PROVER_PRIVATE_KEY: proverPrivateKey,
     DEPLOYER_PRIVATE_KEY: deployerPrivateKey,
     PROVER_FUNDER_PRIVATE_KEY: deployerPrivateKey,
-    PROVER_MIN_NATIVE_ETH: process.env.PROVER_MIN_NATIVE_ETH ?? "0.05",
+    PROVER_MIN_NATIVE_ETH,
     INDEXER_PORT: String(INDEXER_PORT),
     RELAYER_PORT: String(RELAYER_PORT),
     PROVER_PORT: String(PROVER_PORT),
@@ -487,6 +488,7 @@ async function run(cmd, args, options) {
 
 async function ensureOperatorGas(localEnv) {
   const minOperatorGas = parseEther(process.env.E2E_MIN_OPERATOR_GAS_ETH ?? "0.05");
+  const minProverGas = resolveMinProverGas(minOperatorGas);
   const deployerKey = process.env.DEPLOYER_PRIVATE_KEY ?? DEFAULT_DEPLOYER_PRIVATE_KEY;
   const deployer = privateKeyToAccount(deployerKey);
 
@@ -520,12 +522,28 @@ async function ensureOperatorGas(localEnv) {
   const hubDeployer = createWalletClient({ account: deployer, chain: hubChain, transport: http(HUB_RPC_URL) });
   const spokeDeployer = createWalletClient({ account: deployer, chain: spokeChain, transport: http(SPOKE_RPC_URL) });
 
+  console.log(
+    `[e2e] operator gas targets: default=${formatEther(minOperatorGas)} ETH prover=${formatEther(minProverGas)} ETH`
+  );
+
   await ensureNativeBalance(hubDeployer, hubPublic, relayer.address, minOperatorGas, "hub relayer", HUB_ADMIN_RPC_URL);
   await ensureNativeBalance(hubDeployer, hubPublic, bridge.address, minOperatorGas, "hub bridge", HUB_ADMIN_RPC_URL);
-  await ensureNativeBalance(hubDeployer, hubPublic, prover.address, minOperatorGas, "hub prover", HUB_ADMIN_RPC_URL);
+  await ensureNativeBalance(hubDeployer, hubPublic, prover.address, minProverGas, "hub prover", HUB_ADMIN_RPC_URL);
   await ensureNativeBalance(spokeDeployer, spokePublic, relayer.address, minOperatorGas, "spoke relayer", SPOKE_ADMIN_RPC_URL);
   await ensureNativeBalance(spokeDeployer, spokePublic, bridge.address, minOperatorGas, "spoke bridge", SPOKE_ADMIN_RPC_URL);
-  await ensureNativeBalance(spokeDeployer, spokePublic, prover.address, minOperatorGas, "spoke prover", SPOKE_ADMIN_RPC_URL);
+  await ensureNativeBalance(spokeDeployer, spokePublic, prover.address, minProverGas, "spoke prover", SPOKE_ADMIN_RPC_URL);
+}
+
+function resolveMinProverGas(minOperatorGas) {
+  const proverRuntimeMin = parseEther(PROVER_MIN_NATIVE_ETH);
+  const proverBuffer = parseEther(process.env.E2E_PROVER_GAS_BUFFER_ETH ?? "0.01");
+  const explicitProverMin = parseEther(process.env.E2E_MIN_PROVER_GAS_ETH ?? "0.1");
+  const runtimeWithBuffer = proverRuntimeMin + proverBuffer;
+  return maxBigInt(explicitProverMin, maxBigInt(minOperatorGas, runtimeWithBuffer));
+}
+
+function maxBigInt(a, b) {
+  return a > b ? a : b;
 }
 
 async function logOperatorBalances(localEnv) {

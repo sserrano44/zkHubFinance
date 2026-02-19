@@ -34,7 +34,7 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
     }
 
     mapping(uint256 => bool) public batchExecuted;
-    mapping(uint256 => bool) public depositSettled;
+    mapping(uint256 => mapping(uint256 => bool)) public depositSettled;
     mapping(bytes32 => FillEvidence) public fillEvidence;
     mapping(bytes32 => bool) public intentSettled;
 
@@ -59,7 +59,7 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
     error TooManyActions(uint256 count, uint256 max);
     error InvalidActionsRoot(bytes32 expected, bytes32 got);
     error InvalidProof();
-    error DepositAlreadySettled(uint256 depositId);
+    error DepositAlreadySettled(uint256 spokeChainId, uint256 depositId);
     error IntentAlreadySettled(bytes32 intentId);
     error MissingFillEvidence(bytes32 intentId);
     error FillEvidenceMismatch(bytes32 intentId);
@@ -210,8 +210,8 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
 
         batchExecuted[batch.batchId] = true;
 
-        _applySupplyCredits(batch.supplyCredits);
-        _applyRepayCredits(batch.repayCredits);
+        _applySupplyCredits(batch.spokeChainId, batch.supplyCredits);
+        _applyRepayCredits(batch.spokeChainId, batch.repayCredits);
         _applyBorrowFinalizations(batch.borrowFinalizations);
         _applyWithdrawFinalizations(batch.withdrawFinalizations);
 
@@ -286,14 +286,15 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
         return ProofHash.hashPair(h, uint256(uint160(action.relayer)));
     }
 
-    function _applySupplyCredits(DataTypes.SupplyCredit[] calldata credits) internal {
+    function _applySupplyCredits(uint256 spokeChainId, DataTypes.SupplyCredit[] calldata credits) internal {
         for (uint256 i = 0; i < credits.length; i++) {
             DataTypes.SupplyCredit calldata sc = credits[i];
-            if (depositSettled[sc.depositId]) revert DepositAlreadySettled(sc.depositId);
-            depositSettled[sc.depositId] = true;
+            if (depositSettled[spokeChainId][sc.depositId]) revert DepositAlreadySettled(spokeChainId, sc.depositId);
+            depositSettled[spokeChainId][sc.depositId] = true;
 
             // Deposit must already exist in custody (bridged) before crediting market accounting.
             custody.consumeDepositToMarket(
+                spokeChainId,
                 sc.depositId,
                 Constants.INTENT_SUPPLY,
                 sc.user,
@@ -306,13 +307,14 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
         }
     }
 
-    function _applyRepayCredits(DataTypes.RepayCredit[] calldata credits) internal {
+    function _applyRepayCredits(uint256 spokeChainId, DataTypes.RepayCredit[] calldata credits) internal {
         for (uint256 i = 0; i < credits.length; i++) {
             DataTypes.RepayCredit calldata rc = credits[i];
-            if (depositSettled[rc.depositId]) revert DepositAlreadySettled(rc.depositId);
-            depositSettled[rc.depositId] = true;
+            if (depositSettled[spokeChainId][rc.depositId]) revert DepositAlreadySettled(spokeChainId, rc.depositId);
+            depositSettled[spokeChainId][rc.depositId] = true;
 
             custody.consumeDepositToMarket(
+                spokeChainId,
                 rc.depositId,
                 Constants.INTENT_REPAY,
                 rc.user,

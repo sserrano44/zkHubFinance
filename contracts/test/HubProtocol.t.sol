@@ -443,6 +443,76 @@ contract HubProtocolTest is TestBase {
         settlement.settleBatch(replayIntentBatch, DEV_PROOF);
     }
 
+    function test_settlementAllowsSameDepositIdAcrossDifferentSpokeChains() external {
+        uint256 depositId = 42_424;
+        uint256 amountChainA = 25e6;
+        uint256 amountChainB = 35e6;
+        uint256 chainA = 480;
+        uint256 chainB = 481;
+
+        hubUSDC.mint(address(custody), amountChainA + amountChainB);
+        _registerAttestedDepositForChain(chainA, depositId, Constants.INTENT_SUPPLY, user, address(hubUSDC), amountChainA);
+        _registerAttestedDepositForChain(chainB, depositId, Constants.INTENT_SUPPLY, user, address(hubUSDC), amountChainB);
+
+        DataTypes.SupplyCredit[] memory chainASupply = new DataTypes.SupplyCredit[](1);
+        chainASupply[0] = DataTypes.SupplyCredit({
+            depositId: depositId,
+            user: user,
+            hubAsset: address(hubUSDC),
+            amount: amountChainA
+        });
+
+        DataTypes.SettlementBatch memory batchA = DataTypes.SettlementBatch({
+            batchId: 9_300,
+            hubChainId: block.chainid,
+            spokeChainId: chainA,
+            actionsRoot: bytes32(0),
+            supplyCredits: chainASupply,
+            repayCredits: new DataTypes.RepayCredit[](0),
+            borrowFinalizations: new DataTypes.BorrowFinalize[](0),
+            withdrawFinalizations: new DataTypes.WithdrawFinalize[](0)
+        });
+        batchA.actionsRoot = settlement.computeActionsRoot(batchA);
+        settlement.settleBatch(batchA, DEV_PROOF);
+
+        assertEq(market.getUserSupply(user, address(hubUSDC)), amountChainA, "chain A supply should settle");
+        assertTrue(settlement.depositSettled(chainA, depositId), "chain A deposit must be marked settled");
+        assertTrue(!settlement.depositSettled(chainB, depositId), "chain B deposit must remain unsettled");
+
+        DataTypes.SupplyCredit[] memory chainBSupply = new DataTypes.SupplyCredit[](1);
+        chainBSupply[0] = DataTypes.SupplyCredit({
+            depositId: depositId,
+            user: user,
+            hubAsset: address(hubUSDC),
+            amount: amountChainB
+        });
+
+        DataTypes.SettlementBatch memory batchB = DataTypes.SettlementBatch({
+            batchId: 9_301,
+            hubChainId: block.chainid,
+            spokeChainId: chainB,
+            actionsRoot: bytes32(0),
+            supplyCredits: chainBSupply,
+            repayCredits: new DataTypes.RepayCredit[](0),
+            borrowFinalizations: new DataTypes.BorrowFinalize[](0),
+            withdrawFinalizations: new DataTypes.WithdrawFinalize[](0)
+        });
+        batchB.actionsRoot = settlement.computeActionsRoot(batchB);
+        settlement.settleBatch(batchB, DEV_PROOF);
+
+        assertEq(
+            market.getUserSupply(user, address(hubUSDC)),
+            amountChainA + amountChainB,
+            "supplies from both chains should be credited"
+        );
+        assertTrue(settlement.depositSettled(chainB, depositId), "chain B deposit must be marked settled");
+
+        (,,,, bool consumedA) = custody.deposits(chainA, depositId);
+        (,,,, bool consumedB) = custody.deposits(chainB, depositId);
+        assertTrue(consumedA, "chain A deposit should be consumed");
+        assertTrue(consumedB, "chain B deposit should be consumed");
+    }
+
     function test_failurePaths_missingLockMissingFillExpiredIntent() external {
         DataTypes.Intent memory borrowIntent = _makeIntent(Constants.INTENT_BORROW, 10e6, 50);
         spokeUSDC.mint(relayer, borrowIntent.amount);
@@ -1142,10 +1212,10 @@ contract HubProtocolTest is TestBase {
         assertEq(userSupplyAfter, userSupplyBefore, "failed batch must not credit supply");
         assertEq(custodyBalanceAfter, custodyBalanceBefore, "failed batch must not transfer custody funds");
         assertTrue(!settlement.batchExecuted(batch.batchId), "failed batch must not be marked executed");
-        assertTrue(!settlement.depositSettled(depositId1), "first action state must roll back");
-        assertTrue(!settlement.depositSettled(depositId2), "second action must remain unsettled");
+        assertTrue(!settlement.depositSettled(480, depositId1), "first action state must roll back");
+        assertTrue(!settlement.depositSettled(480, depositId2), "second action must remain unsettled");
 
-        (,,,, bool consumed) = custody.deposits(depositId1);
+        (,,,, bool consumed) = custody.deposits(480, depositId1);
         assertTrue(!consumed, "custody deposit consumed flag must roll back");
     }
 
@@ -1180,6 +1250,17 @@ contract HubProtocolTest is TestBase {
     function _registerAttestedDeposit(uint256 depositId, uint8 intentType, address depositUser, address hubAsset, uint256 amount)
         internal
     {
+        _registerAttestedDepositForChain(480, depositId, intentType, depositUser, hubAsset, amount);
+    }
+
+    function _registerAttestedDepositForChain(
+        uint256 originChainId,
+        uint256 depositId,
+        uint8 intentType,
+        address depositUser,
+        address hubAsset,
+        uint256 amount
+    ) internal {
         vm.prank(bridgeOperator);
         custody.registerBridgedDeposit(
             depositId,
@@ -1187,10 +1268,11 @@ contract HubProtocolTest is TestBase {
             depositUser,
             hubAsset,
             amount,
-            480,
+            originChainId,
             keccak256(
                 abi.encodePacked(
                     keccak256(bytes("origin")),
+                    originChainId,
                     depositId,
                     intentType,
                     depositUser,
