@@ -47,11 +47,12 @@ const spokeChainId = BigInt(process.env.SPOKE_CHAIN_ID ?? "480");
 const lockManagerAddress = process.env.HUB_LOCK_MANAGER_ADDRESS;
 const settlementAddress = process.env.HUB_SETTLEMENT_ADDRESS;
 const custodyAddress = process.env.HUB_CUSTODY_ADDRESS;
-const acrossReceiverAddress = (process.env.HUB_ACROSS_RECEIVER_ADDRESS
-    ?? process.env.HUB_CANONICAL_BRIDGE_RECEIVER_ADDRESS);
+const acrossReceiverAddress = process.env.HUB_ACROSS_RECEIVER_ADDRESS;
+const acrossBorrowDispatcherAddress = process.env.HUB_ACROSS_BORROW_DISPATCHER_ADDRESS;
+const acrossBorrowFinalizerAddress = process.env.HUB_ACROSS_BORROW_FINALIZER_ADDRESS;
 const portalAddress = process.env.SPOKE_PORTAL_ADDRESS;
-const spokeAcrossSpokePoolAddress = (process.env.SPOKE_ACROSS_SPOKE_POOL_ADDRESS
-    ?? process.env.SPOKE_CANONICAL_BRIDGE_ADDRESS);
+const spokeAcrossSpokePoolAddress = process.env.SPOKE_ACROSS_SPOKE_POOL_ADDRESS;
+const spokeBorrowReceiverAddress = process.env.SPOKE_BORROW_RECEIVER_ADDRESS;
 const relayerKey = process.env.RELAYER_PRIVATE_KEY;
 const indexerApi = process.env.INDEXER_API_URL ?? "http://127.0.0.1:3030";
 const proverApi = process.env.PROVER_API_URL ?? "http://127.0.0.1:3050";
@@ -68,8 +69,11 @@ if (!lockManagerAddress
     || !settlementAddress
     || !custodyAddress
     || !acrossReceiverAddress
+    || !acrossBorrowDispatcherAddress
+    || !acrossBorrowFinalizerAddress
     || !portalAddress
     || !spokeAcrossSpokePoolAddress
+    || !spokeBorrowReceiverAddress
     || !relayerKey) {
     throw new Error("Missing required relayer env vars for deployed addresses/private key");
 }
@@ -95,9 +99,16 @@ const spokePublic = createPublicClient({ chain: spokeChain, transport: http(spok
 const hubWallet = createWalletClient({ account: relayerAccount, chain: hubChain, transport: http(hubRpc) });
 const spokeWallet = createWalletClient({ account: relayerAccount, chain: spokeChain, transport: http(spokeRpc) });
 const acrossReceiverAbi = parseAbi([
-    "function finalizePendingDeposit(bytes32 pendingId,bytes proof,(uint256 sourceChainId,uint256 depositId,uint8 intentType,address user,address hubAsset,uint256 amount,bytes32 sourceTxHash,uint256 sourceLogIndex,bytes32 messageHash) witness)"
+    "function finalizePendingDeposit(bytes32 pendingId,bytes proof,(uint256 sourceChainId,uint256 depositId,uint8 intentType,address user,address spokeToken,address hubAsset,uint256 amount,bytes32 sourceTxHash,uint256 sourceLogIndex,bytes32 messageHash) witness)"
+]);
+const acrossBorrowDispatcherAbi = parseAbi([
+    "function dispatchBorrowFill(bytes32 intentId,address user,address recipient,address outputToken,uint256 amount,uint256 outputChainId,uint256 relayerFee,uint256 maxRelayerFee,address hubAsset) returns (bytes32)"
+]);
+const acrossBorrowFinalizerAbi = parseAbi([
+    "function finalizeBorrowFill(bytes proof,(uint256 sourceChainId,bytes32 intentId,uint8 intentType,address user,address recipient,address spokeToken,address hubAsset,uint256 amount,uint256 fee,address relayer,bytes32 sourceTxHash,uint256 sourceLogIndex,bytes32 messageHash) witness)"
 ]);
 const spokeV3FundsDepositedEvent = parseAbiItem("event V3FundsDeposited(uint256 indexed depositId, address indexed depositor, address indexed recipient, address inputToken, address outputToken, uint256 inputAmount, uint256 outputAmount, uint256 destinationChainId, address exclusiveRelayer, uint32 quoteTimestamp, uint32 fillDeadline, uint32 exclusivityDeadline, bytes message, address caller)");
+const spokeBorrowFillRecordedEvent = parseAbiItem("event BorrowFillRecorded(bytes32 indexed intentId,uint8 indexed intentType,address indexed user,address recipient,address spokeToken,address hubAsset,uint256 amount,uint256 fee,address relayer,uint256 destinationChainId,address hubFinalizer,bytes32 messageHash)");
 const hubPendingDepositRecordedEvent = parseAbiItem("event PendingDepositRecorded(bytes32 indexed pendingId,uint256 indexed sourceChainId,uint256 indexed depositId,uint8 intentType,address user,address spokeToken,address hubAsset,uint256 amount,address tokenReceived,uint256 amountReceived,address relayer,bytes32 messageHash)");
 const hubBridgedDepositRegisteredEvent = parseAbiItem("event BridgedDepositRegistered(uint256 indexed depositId, uint8 indexed intentType, address indexed user, address hubAsset, uint256 amount, uint256 originChainId, bytes32 originTxHash, uint256 originLogIndex, bytes32 attestationKey)");
 const trackingPath = process.env.RELAYER_TRACKING_PATH ?? path.join(process.cwd(), "data", "relayer-tracking.json");
@@ -129,7 +140,10 @@ app.get("/health", (_req, res) => {
         spokeRpc,
         hubChainId: hubChainId.toString(),
         acrossReceiverAddress,
+        acrossBorrowDispatcherAddress,
+        acrossBorrowFinalizerAddress,
         spokeAcrossSpokePoolAddress,
+        spokeBorrowReceiverAddress,
         bridgeFinalityBlocks: relayerSpokeFinalityBlocks.toString(),
         spokeFinalityBlocks: relayerSpokeFinalityBlocks.toString(),
         hubFinalityBlocks: relayerHubFinalityBlocks.toString(),
@@ -180,6 +194,51 @@ app.post("/intent/submit", async (req, res) => {
             account: relayerAccount
         });
         await hubPublic.waitForTransactionReceipt({ hash: lockTx });
+        const hubAsset = spokeToHub[intent.outputToken.toLowerCase()];
+        if (!hubAsset) {
+            throw new Error(`No spoke->hub token mapping for ${intent.outputToken}`);
+        }
+        if (intent.intentType === IntentType.BORROW) {
+            await hubWallet.writeContract({
+                abi: MockERC20Abi,
+                address: hubAsset,
+                functionName: "approve",
+                args: [acrossBorrowDispatcherAddress, intent.amount],
+                account: relayerAccount
+            });
+            const dispatchTx = await hubWallet.writeContract({
+                abi: acrossBorrowDispatcherAbi,
+                address: acrossBorrowDispatcherAddress,
+                functionName: "dispatchBorrowFill",
+                args: [
+                    intentId,
+                    intent.user,
+                    intent.recipient,
+                    intent.outputToken,
+                    intent.amount,
+                    intent.outputChainId,
+                    relayerFee,
+                    intent.maxRelayerFee,
+                    hubAsset
+                ],
+                account: relayerAccount
+            });
+            await hubPublic.waitForTransactionReceipt({ hash: dispatchTx });
+            await updateIntentStatus(intentId, "locked", { lockTx, dispatchTx });
+            auditLog(req, "submit_ok", {
+                intentId,
+                intentType: intent.intentType,
+                lockTx,
+                dispatchTx
+            });
+            res.json({
+                intentId,
+                status: "locked",
+                lockTx,
+                dispatchTx
+            });
+            return;
+        }
         await updateIntentStatus(intentId, "locked", { lockTx });
         await spokeWallet.writeContract({
             abi: MockERC20Abi,
@@ -191,16 +250,12 @@ app.post("/intent/submit", async (req, res) => {
         const fillTx = await spokeWallet.writeContract({
             abi: SpokePortalAbi,
             address: portalAddress,
-            functionName: intent.intentType === IntentType.BORROW ? "fillBorrow" : "fillWithdraw",
+            functionName: "fillWithdraw",
             args: [intent, relayerFee, "0x"],
             account: relayerAccount
         });
         await spokePublic.waitForTransactionReceipt({ hash: fillTx });
         await updateIntentStatus(intentId, "filled", { fillTx });
-        const hubAsset = spokeToHub[intent.outputToken.toLowerCase()];
-        if (!hubAsset) {
-            throw new Error(`No spoke->hub token mapping for ${intent.outputToken}`);
-        }
         const recordTx = await hubWallet.writeContract({
             abi: HubSettlementAbi,
             address: settlementAddress,
@@ -218,7 +273,7 @@ app.post("/intent/submit", async (req, res) => {
         });
         await hubPublic.waitForTransactionReceipt({ hash: recordTx });
         await enqueueProverAction({
-            kind: intent.intentType === IntentType.BORROW ? "borrow" : "withdraw",
+            kind: "withdraw",
             intentId,
             user: intent.user,
             hubAsset,
@@ -324,6 +379,15 @@ async function pollSpokeDeposits() {
     for (const log of acrossDepositLogs) {
         await handleAcrossDepositLog(log, finalizedToBlock);
     }
+    const borrowFillLogs = await spokePublic.getLogs({
+        address: spokeBorrowReceiverAddress,
+        event: spokeBorrowFillRecordedEvent,
+        fromBlock,
+        toBlock: rangeToBlock
+    });
+    for (const log of borrowFillLogs) {
+        await handleSpokeBorrowFillLog(log, finalizedToBlock);
+    }
     tracking.lastSpokeBlock = rangeToBlock;
     saveTracking(trackingPath, tracking);
 }
@@ -377,6 +441,13 @@ async function handleAcrossDepositLog(log, finalizedToBlock) {
     if (existing?.status === "settled" || existing?.status === "bridged") {
         return;
     }
+    const sourceBlock = await spokePublic.getBlock({ blockNumber: spokeObservedBlock });
+    const sourceBlockHash = asHexString(sourceBlock.hash);
+    const sourceReceiptsRoot = asHexString(sourceBlock.receiptsRoot);
+    if (!sourceBlockHash || !sourceReceiptsRoot) {
+        console.warn(`Skipping deposit ${depositId.toString()} due to missing source block hash/receipts root`);
+        return;
+    }
     const messageHash = keccak256(message);
     const nextStatus = existing?.status === "pending_fill" ? "pending_fill" : "initiated";
     await postInternal(indexerApi, "/internal/deposits/upsert", {
@@ -390,8 +461,12 @@ async function handleAcrossDepositLog(log, finalizedToBlock) {
             acrossSourceTx: originTxHash,
             acrossSourceLogIndex: originLogIndex.toString(),
             acrossSourceSpokePool: spokeAcrossSpokePoolAddress,
+            acrossSpokeToken: spokeToken,
             originChainId: sourceChainId.toString(),
             acrossMessageHash: messageHash,
+            acrossSourceBlockNumber: spokeObservedBlock.toString(),
+            acrossSourceBlockHash: sourceBlockHash,
+            acrossSourceReceiptsRoot: sourceReceiptsRoot,
             spokeObservedBlock: spokeObservedBlock.toString(),
             spokeFinalizedToBlock: finalizedToBlock.toString()
         }
@@ -408,13 +483,144 @@ async function handleAcrossDepositLog(log, finalizedToBlock) {
         depositId,
         intentType,
         user,
+        spokeToken,
         hubAsset,
         amount,
         sourceTxHash: originTxHash,
         sourceLogIndex: originLogIndex,
         messageHash
     };
-    await attemptFinalizePendingDeposit(pendingId, witness, depositId, user, intentType, hubAsset, amount);
+    const sourceEvidence = {
+        sourceBlockNumber: spokeObservedBlock,
+        sourceBlockHash,
+        sourceReceiptsRoot,
+        sourceSpokePool: spokeAcrossSpokePoolAddress
+    };
+    await attemptFinalizePendingDeposit(pendingId, witness, sourceEvidence, depositId, user, intentType, hubAsset, amount);
+}
+async function handleSpokeBorrowFillLog(log, finalizedToBlock) {
+    const intentId = log.args.intentId;
+    const rawIntentType = asBigInt(log.args.intentType);
+    const user = log.args.user;
+    const recipient = log.args.recipient;
+    const spokeToken = log.args.spokeToken;
+    const hubAsset = log.args.hubAsset;
+    const amount = asBigInt(log.args.amount);
+    const fee = asBigInt(log.args.fee);
+    const relayer = log.args.relayer;
+    const destinationChainId = asBigInt(log.args.destinationChainId);
+    const hubFinalizer = log.args.hubFinalizer;
+    const messageHash = log.args.messageHash;
+    const sourceTxHash = log.transactionHash;
+    const sourceLogIndex = typeof log.logIndex === "bigint" ? log.logIndex : BigInt(log.logIndex ?? 0);
+    const spokeObservedBlock = log.blockNumber ?? 0n;
+    if (!intentId
+        || rawIntentType === undefined
+        || !user
+        || !recipient
+        || !spokeToken
+        || !hubAsset
+        || amount === undefined
+        || fee === undefined
+        || !relayer
+        || destinationChainId === undefined
+        || !hubFinalizer
+        || !messageHash
+        || !sourceTxHash) {
+        console.warn("Skipping borrow fill log with missing fields");
+        return;
+    }
+    const intentType = Number(rawIntentType);
+    if (intentType !== IntentType.BORROW)
+        return;
+    if (fee >= amount) {
+        console.warn(`Skipping borrow fill ${intentId} due to invalid fee`);
+        return;
+    }
+    if (destinationChainId !== spokeChainId) {
+        console.warn(`Skipping borrow fill ${intentId} due to chain mismatch`);
+        return;
+    }
+    if (hubFinalizer.toLowerCase() !== acrossBorrowFinalizerAddress.toLowerCase()) {
+        console.warn(`Skipping borrow fill ${intentId} due to hub finalizer mismatch`);
+        return;
+    }
+    const existing = await fetchIntent(intentId);
+    if (existing?.status === "settled" || existing?.status === "awaiting_settlement") {
+        return;
+    }
+    if (existing) {
+        if (existing.intentType !== IntentType.BORROW) {
+            console.warn(`Skipping borrow fill ${intentId} due to intent type mismatch`);
+            return;
+        }
+        if (existing.user.toLowerCase() !== user.toLowerCase()) {
+            console.warn(`Skipping borrow fill ${intentId} due to user mismatch`);
+            return;
+        }
+        if (existing.token.toLowerCase() !== spokeToken.toLowerCase()) {
+            console.warn(`Skipping borrow fill ${intentId} due to spoke token mismatch`);
+            return;
+        }
+        if (existing.amount !== amount.toString()) {
+            console.warn(`Skipping borrow fill ${intentId} due to amount mismatch`);
+            return;
+        }
+    }
+    const sourceBlock = await spokePublic.getBlock({ blockNumber: spokeObservedBlock });
+    const sourceBlockHash = asHexString(sourceBlock.hash);
+    const sourceReceiptsRoot = asHexString(sourceBlock.receiptsRoot);
+    if (!sourceBlockHash || !sourceReceiptsRoot) {
+        console.warn(`Skipping borrow fill ${intentId} due to missing source block hash/receipts root`);
+        return;
+    }
+    const witness = {
+        sourceChainId: spokeChainId,
+        intentId,
+        intentType,
+        user,
+        recipient,
+        spokeToken,
+        hubAsset,
+        amount,
+        fee,
+        relayer,
+        sourceTxHash,
+        sourceLogIndex,
+        messageHash
+    };
+    const sourceEvidence = {
+        sourceBlockNumber: spokeObservedBlock,
+        sourceBlockHash,
+        sourceReceiptsRoot,
+        sourceReceiver: spokeBorrowReceiverAddress
+    };
+    const finalizeTx = await attemptFinalizeBorrowFill(witness, sourceEvidence, intentId).catch((error) => {
+        console.warn(`Borrow fill finalization failed for intent ${intentId}: ${error.message}`);
+        return undefined;
+    });
+    if (!finalizeTx)
+        return;
+    await updateIntentStatus(intentId, "filled", {
+        spokeBorrowFillTx: sourceTxHash,
+        spokeBorrowFillLogIndex: sourceLogIndex.toString(),
+        spokeObservedBlock: spokeObservedBlock.toString(),
+        spokeFinalizedToBlock: finalizedToBlock.toString(),
+        borrowFillFinalizeTx: finalizeTx
+    });
+    await enqueueProverAction({
+        kind: "borrow",
+        intentId,
+        user,
+        hubAsset,
+        amount: amount.toString(),
+        fee: fee.toString(),
+        relayer
+    });
+    await updateIntentStatus(intentId, "awaiting_settlement", {
+        spokeBorrowFillTx: sourceTxHash,
+        borrowFillFinalizeTx: finalizeTx
+    });
 }
 async function pollHubDeposits() {
     const latestBlock = await hubPublic.getBlockNumber();
@@ -468,6 +674,7 @@ async function handleHubPendingDepositLog(log, finalizedToBlock) {
     const depositId = asBigInt(log.args.depositId);
     const rawIntentType = asBigInt(log.args.intentType);
     const user = log.args.user;
+    const spokeToken = log.args.spokeToken;
     const hubAsset = log.args.hubAsset;
     const amount = asBigInt(log.args.amount);
     const tokenReceived = log.args.tokenReceived;
@@ -479,6 +686,7 @@ async function handleHubPendingDepositLog(log, finalizedToBlock) {
         || depositId === undefined
         || rawIntentType === undefined
         || !user
+        || !spokeToken
         || !hubAsset
         || amount === undefined
         || !tokenReceived
@@ -516,6 +724,11 @@ async function handleHubPendingDepositLog(log, finalizedToBlock) {
             console.warn(`Skipping pending deposit ${depositId.toString()} due to amount mismatch`);
             return;
         }
+        const expectedSpokeToken = metadataString(existing.metadata, "acrossSpokeToken");
+        if (expectedSpokeToken && expectedSpokeToken.toLowerCase() !== spokeToken.toLowerCase()) {
+            console.warn(`Skipping pending deposit ${depositId.toString()} due to spoke token mismatch`);
+            return;
+        }
     }
     const expectedOriginChainId = metadataBigInt(existing?.metadata, "originChainId");
     if (expectedOriginChainId !== undefined && expectedOriginChainId !== sourceChainId) {
@@ -539,8 +752,17 @@ async function handleHubPendingDepositLog(log, finalizedToBlock) {
     });
     const sourceTxHash = asHexString(metadataString(existing?.metadata, "acrossSourceTx"));
     const sourceLogIndex = metadataBigInt(existing?.metadata, "acrossSourceLogIndex");
-    if (!sourceTxHash || sourceLogIndex === undefined) {
-        console.warn(`Pending deposit ${depositId.toString()} is missing source tx/log metadata; waiting for spoke source observation`);
+    const sourceBlockNumber = metadataBigInt(existing?.metadata, "acrossSourceBlockNumber");
+    const sourceBlockHash = asHexString(metadataString(existing?.metadata, "acrossSourceBlockHash"));
+    const sourceReceiptsRoot = asHexString(metadataString(existing?.metadata, "acrossSourceReceiptsRoot"));
+    const sourceSpokePool = asAddress(metadataString(existing?.metadata, "acrossSourceSpokePool"));
+    if (!sourceTxHash
+        || sourceLogIndex === undefined
+        || sourceBlockNumber === undefined
+        || !sourceBlockHash
+        || !sourceReceiptsRoot
+        || !sourceSpokePool) {
+        console.warn(`Pending deposit ${depositId.toString()} is missing source proof metadata; waiting for spoke source observation`);
         return;
     }
     const witness = {
@@ -548,13 +770,20 @@ async function handleHubPendingDepositLog(log, finalizedToBlock) {
         depositId,
         intentType,
         user,
+        spokeToken,
         hubAsset,
         amount,
         sourceTxHash,
         sourceLogIndex,
         messageHash
     };
-    await attemptFinalizePendingDeposit(pendingId, witness, depositId, user, intentType, hubAsset, amount);
+    const sourceEvidence = {
+        sourceBlockNumber,
+        sourceBlockHash,
+        sourceReceiptsRoot,
+        sourceSpokePool
+    };
+    await attemptFinalizePendingDeposit(pendingId, witness, sourceEvidence, depositId, user, intentType, hubAsset, amount);
 }
 async function handleHubBridgedDepositLog(log, finalizedToBlock) {
     const depositId = asBigInt(log.args.depositId);
@@ -651,20 +880,33 @@ async function fetchDeposit(depositId) {
         return undefined;
     return (await existing.json());
 }
+async function fetchIntent(intentId) {
+    const existing = await fetch(`${indexerApi}/intents/${intentId}`).catch(() => null);
+    if (!existing || !existing.ok)
+        return undefined;
+    return (await existing.json());
+}
 async function enqueueProverAction(body) {
     await postInternal(proverApi, "/internal/enqueue", body);
 }
-async function fetchDepositProof(witness) {
+async function fetchDepositProof(witness, sourceEvidence) {
     const response = await postInternal(proverApi, "/internal/deposit-proof", {
         sourceChainId: witness.sourceChainId.toString(),
         depositId: witness.depositId.toString(),
         intentType: witness.intentType,
         user: witness.user,
+        spokeToken: witness.spokeToken,
         hubAsset: witness.hubAsset,
         amount: witness.amount.toString(),
         sourceTxHash: witness.sourceTxHash,
         sourceLogIndex: witness.sourceLogIndex.toString(),
-        messageHash: witness.messageHash
+        messageHash: witness.messageHash,
+        sourceBlockNumber: sourceEvidence.sourceBlockNumber.toString(),
+        sourceBlockHash: sourceEvidence.sourceBlockHash,
+        sourceReceiptsRoot: sourceEvidence.sourceReceiptsRoot,
+        sourceSpokePool: sourceEvidence.sourceSpokePool,
+        destinationReceiver: acrossReceiverAddress,
+        destinationChainId: hubChainId.toString()
     });
     const proof = asHexString(response?.proof);
     if (!proof) {
@@ -672,10 +914,38 @@ async function fetchDepositProof(witness) {
     }
     return proof;
 }
-async function attemptFinalizePendingDeposit(pendingId, witness, depositId, user, intentType, hubAsset, amount) {
+async function fetchBorrowFillProof(witness, sourceEvidence) {
+    const response = await postInternal(proverApi, "/internal/borrow-fill-proof", {
+        sourceChainId: witness.sourceChainId.toString(),
+        intentId: witness.intentId,
+        intentType: witness.intentType,
+        user: witness.user,
+        recipient: witness.recipient,
+        spokeToken: witness.spokeToken,
+        hubAsset: witness.hubAsset,
+        amount: witness.amount.toString(),
+        fee: witness.fee.toString(),
+        relayer: witness.relayer,
+        sourceTxHash: witness.sourceTxHash,
+        sourceLogIndex: witness.sourceLogIndex.toString(),
+        messageHash: witness.messageHash,
+        sourceBlockNumber: sourceEvidence.sourceBlockNumber.toString(),
+        sourceBlockHash: sourceEvidence.sourceBlockHash,
+        sourceReceiptsRoot: sourceEvidence.sourceReceiptsRoot,
+        sourceReceiver: sourceEvidence.sourceReceiver,
+        destinationFinalizer: acrossBorrowFinalizerAddress,
+        destinationChainId: hubChainId.toString()
+    });
+    const proof = asHexString(response?.proof);
+    if (!proof) {
+        throw new Error("prover response missing borrow fill proof");
+    }
+    return proof;
+}
+async function attemptFinalizePendingDeposit(pendingId, witness, sourceEvidence, depositId, user, intentType, hubAsset, amount) {
     let proof;
     try {
-        proof = await fetchDepositProof(witness);
+        proof = await fetchDepositProof(witness, sourceEvidence);
     }
     catch (error) {
         console.warn(`Deposit proof fetch failed for deposit ${depositId.toString()}: ${error.message}`);
@@ -705,6 +975,24 @@ async function attemptFinalizePendingDeposit(pendingId, witness, depositId, user
     catch (error) {
         console.warn(`Across pending finalization failed for deposit ${depositId.toString()}: ${error.message}`);
     }
+}
+async function attemptFinalizeBorrowFill(witness, sourceEvidence, intentId) {
+    const proof = await fetchBorrowFillProof(witness, sourceEvidence);
+    const finalizeTx = await hubWallet.writeContract({
+        abi: acrossBorrowFinalizerAbi,
+        address: acrossBorrowFinalizerAddress,
+        functionName: "finalizeBorrowFill",
+        args: [proof, witness],
+        account: relayerAccount
+    });
+    await hubPublic.waitForTransactionReceipt({ hash: finalizeTx });
+    auditLog(undefined, "borrow_fill_finalized", {
+        intentId,
+        finalizeTx,
+        sourceTxHash: witness.sourceTxHash,
+        sourceLogIndex: witness.sourceLogIndex.toString()
+    });
+    return finalizeTx;
 }
 async function upsertIntent(intentId, intent, status, metadata) {
     await postInternal(indexerApi, "/internal/intents/upsert", {
@@ -859,6 +1147,13 @@ function asHexString(value) {
         return undefined;
     return value;
 }
+function asAddress(value) {
+    if (!value || typeof value !== "string")
+        return undefined;
+    if (!value.startsWith("0x") || value.length !== 42)
+        return undefined;
+    return value;
+}
 function metadataBigInt(metadata, key) {
     const value = metadataString(metadata, key);
     if (!value)
@@ -915,8 +1210,17 @@ function validateStartupConfig() {
     if (!acrossReceiverAddress) {
         throw new Error("Missing HUB_ACROSS_RECEIVER_ADDRESS");
     }
+    if (!acrossBorrowDispatcherAddress) {
+        throw new Error("Missing HUB_ACROSS_BORROW_DISPATCHER_ADDRESS");
+    }
+    if (!acrossBorrowFinalizerAddress) {
+        throw new Error("Missing HUB_ACROSS_BORROW_FINALIZER_ADDRESS");
+    }
     if (!spokeAcrossSpokePoolAddress) {
         throw new Error("Missing SPOKE_ACROSS_SPOKE_POOL_ADDRESS");
+    }
+    if (!spokeBorrowReceiverAddress) {
+        throw new Error("Missing SPOKE_BORROW_RECEIVER_ADDRESS");
     }
 }
 //# sourceMappingURL=server.js.map

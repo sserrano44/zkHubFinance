@@ -1,16 +1,11 @@
-import type { Address, Hex } from "viem";
-import { computeActionsRoot, hashPair, toField } from "./hash";
-import type { SettlementBatchPayload } from "./types";
-
-const SYNTHETIC_ACTION_DEPOSIT_ID = 1n;
-const SYNTHETIC_ACTION_USER = "0x000000000000000000000000000000000000dEaD" as Address;
-const SYNTHETIC_ACTION_ASSET = "0x0000000000000000000000000000000000000001" as Address;
+import { encodeAbiParameters, type Address, type Hex } from "viem";
 
 export type DepositWitnessProofInput = {
   sourceChainId: bigint;
   depositId: bigint;
   intentType: number;
   user: Address;
+  spokeToken: Address;
   hubAsset: Address;
   amount: bigint;
   sourceTxHash: Hex;
@@ -18,44 +13,204 @@ export type DepositWitnessProofInput = {
   messageHash: Hex;
 };
 
-export function buildDepositProofBatch(witness: DepositWitnessProofInput): SettlementBatchPayload {
-  const batchId = toField(witness.sourceChainId);
-  const hubChainId = toField(witness.depositId);
-  const spokeChainId = hashPair(toField(BigInt(witness.intentType)), toField(BigInt(witness.user)));
-  const commitment = witnessCommitment(witness);
+export type SourceDepositProofInput = {
+  sourceBlockNumber: bigint;
+  sourceBlockHash: Hex;
+  sourceReceiptsRoot: Hex;
+  sourceSpokePool: Address;
+  destinationReceiver: Address;
+  destinationChainId: bigint;
+};
 
-  const draft: Omit<SettlementBatchPayload, "actionsRoot"> = {
-    batchId,
-    hubChainId,
-    spokeChainId,
-    supplyCredits: [
+export type BorrowFillWitnessProofInput = {
+  sourceChainId: bigint;
+  intentId: Hex;
+  intentType: number;
+  user: Address;
+  recipient: Address;
+  spokeToken: Address;
+  hubAsset: Address;
+  amount: bigint;
+  fee: bigint;
+  relayer: Address;
+  sourceTxHash: Hex;
+  sourceLogIndex: bigint;
+  messageHash: Hex;
+};
+
+export type SourceBorrowFillProofInput = {
+  sourceBlockNumber: bigint;
+  sourceBlockHash: Hex;
+  sourceReceiptsRoot: Hex;
+  sourceReceiver: Address;
+  destinationFinalizer: Address;
+  destinationChainId: bigint;
+};
+
+export function buildCanonicalDepositProof(
+  witness: DepositWitnessProofInput,
+  source: SourceDepositProofInput
+): Hex {
+  const finalityProof = encodeAbiParameters(
+    [
+      { name: "sourceChainId", type: "uint256" },
+      { name: "sourceBlockNumber", type: "uint256" },
+      { name: "sourceBlockHash", type: "bytes32" }
+    ],
+    [witness.sourceChainId, source.sourceBlockNumber, source.sourceBlockHash]
+  );
+
+  const inclusionProof = encodeAbiParameters(
+    [
       {
-        depositId: SYNTHETIC_ACTION_DEPOSIT_ID,
-        user: SYNTHETIC_ACTION_USER,
-        hubAsset: SYNTHETIC_ACTION_ASSET,
-        amount: commitment
+        type: "tuple",
+        components: [
+          { name: "sourceChainId", type: "uint256" },
+          { name: "sourceBlockHash", type: "bytes32" },
+          { name: "receiptsRoot", type: "bytes32" },
+          { name: "sourceTxHash", type: "bytes32" },
+          { name: "sourceLogIndex", type: "uint256" },
+          { name: "sourceSpokePool", type: "address" },
+          { name: "inputToken", type: "address" },
+          { name: "outputToken", type: "address" },
+          { name: "outputAmount", type: "uint256" },
+          { name: "destinationChainId", type: "uint256" },
+          { name: "recipient", type: "address" },
+          { name: "messageHash", type: "bytes32" }
+        ]
       }
     ],
-    repayCredits: [],
-    borrowFinalizations: [],
-    withdrawFinalizations: []
-  };
+    [
+      {
+        sourceChainId: witness.sourceChainId,
+        sourceBlockHash: source.sourceBlockHash,
+        receiptsRoot: source.sourceReceiptsRoot,
+        sourceTxHash: witness.sourceTxHash,
+        sourceLogIndex: witness.sourceLogIndex,
+        sourceSpokePool: source.sourceSpokePool,
+        inputToken: witness.spokeToken,
+        outputToken: witness.hubAsset,
+        outputAmount: witness.amount,
+        destinationChainId: source.destinationChainId,
+        recipient: source.destinationReceiver,
+        messageHash: witness.messageHash
+      }
+    ]
+  );
 
-  return {
-    ...draft,
-    actionsRoot: computeActionsRoot(draft)
-  };
+  return encodeAbiParameters(
+    [
+      {
+        type: "tuple",
+        components: [
+          { name: "sourceBlockNumber", type: "uint256" },
+          { name: "sourceBlockHash", type: "bytes32" },
+          { name: "receiptsRoot", type: "bytes32" },
+          { name: "sourceSpokePool", type: "address" },
+          { name: "finalityProof", type: "bytes" },
+          { name: "inclusionProof", type: "bytes" }
+        ]
+      }
+    ],
+    [
+      {
+        sourceBlockNumber: source.sourceBlockNumber,
+        sourceBlockHash: source.sourceBlockHash,
+        receiptsRoot: source.sourceReceiptsRoot,
+        sourceSpokePool: source.sourceSpokePool,
+        finalityProof,
+        inclusionProof
+      }
+    ]
+  );
 }
 
-function witnessCommitment(witness: DepositWitnessProofInput): bigint {
-  let state = hashPair(toField(witness.sourceChainId), toField(witness.depositId));
-  state = hashPair(state, toField(BigInt(witness.intentType)));
-  state = hashPair(state, toField(BigInt(witness.user)));
-  state = hashPair(state, toField(BigInt(witness.hubAsset)));
-  state = hashPair(state, toField(witness.amount));
-  state = hashPair(state, toField(BigInt(witness.sourceTxHash)));
-  state = hashPair(state, toField(witness.sourceLogIndex));
-  state = hashPair(state, toField(BigInt(witness.messageHash)));
-  return state;
-}
+export function buildCanonicalBorrowFillProof(
+  witness: BorrowFillWitnessProofInput,
+  source: SourceBorrowFillProofInput
+): Hex {
+  const finalityProof = encodeAbiParameters(
+    [
+      { name: "sourceChainId", type: "uint256" },
+      { name: "sourceBlockNumber", type: "uint256" },
+      { name: "sourceBlockHash", type: "bytes32" }
+    ],
+    [witness.sourceChainId, source.sourceBlockNumber, source.sourceBlockHash]
+  );
 
+  const inclusionProof = encodeAbiParameters(
+    [
+      {
+        type: "tuple",
+        components: [
+          { name: "sourceChainId", type: "uint256" },
+          { name: "sourceBlockHash", type: "bytes32" },
+          { name: "receiptsRoot", type: "bytes32" },
+          { name: "sourceTxHash", type: "bytes32" },
+          { name: "sourceLogIndex", type: "uint256" },
+          { name: "sourceReceiver", type: "address" },
+          { name: "intentId", type: "bytes32" },
+          { name: "intentType", type: "uint8" },
+          { name: "user", type: "address" },
+          { name: "recipient", type: "address" },
+          { name: "spokeToken", type: "address" },
+          { name: "hubAsset", type: "address" },
+          { name: "amount", type: "uint256" },
+          { name: "fee", type: "uint256" },
+          { name: "relayer", type: "address" },
+          { name: "messageHash", type: "bytes32" },
+          { name: "destinationChainId", type: "uint256" },
+          { name: "hubFinalizer", type: "address" }
+        ]
+      }
+    ],
+    [
+      {
+        sourceChainId: witness.sourceChainId,
+        sourceBlockHash: source.sourceBlockHash,
+        receiptsRoot: source.sourceReceiptsRoot,
+        sourceTxHash: witness.sourceTxHash,
+        sourceLogIndex: witness.sourceLogIndex,
+        sourceReceiver: source.sourceReceiver,
+        intentId: witness.intentId,
+        intentType: witness.intentType,
+        user: witness.user,
+        recipient: witness.recipient,
+        spokeToken: witness.spokeToken,
+        hubAsset: witness.hubAsset,
+        amount: witness.amount,
+        fee: witness.fee,
+        relayer: witness.relayer,
+        messageHash: witness.messageHash,
+        destinationChainId: source.destinationChainId,
+        hubFinalizer: source.destinationFinalizer
+      }
+    ]
+  );
+
+  return encodeAbiParameters(
+    [
+      {
+        type: "tuple",
+        components: [
+          { name: "sourceBlockNumber", type: "uint256" },
+          { name: "sourceBlockHash", type: "bytes32" },
+          { name: "receiptsRoot", type: "bytes32" },
+          { name: "sourceReceiver", type: "address" },
+          { name: "finalityProof", type: "bytes" },
+          { name: "inclusionProof", type: "bytes" }
+        ]
+      }
+    ],
+    [
+      {
+        sourceBlockNumber: source.sourceBlockNumber,
+        sourceBlockHash: source.sourceBlockHash,
+        receiptsRoot: source.sourceReceiptsRoot,
+        sourceReceiver: source.sourceReceiver,
+        finalityProof,
+        inclusionProof
+      }
+    ]
+  );
+}

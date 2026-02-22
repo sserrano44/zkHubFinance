@@ -45,8 +45,8 @@ pnpm abis:generate
 
 # E2E fork tests
 pnpm test:e2e:fork                    # Base + Worldchain fork integration
-pnpm test:e2e:fork:circuit:prepare    # Deploy real Groth16 verifier
-pnpm test:e2e:fork:circuit            # E2E with real proofs
+pnpm test:e2e:base-mainnet-supply     # Base -> mainnet-hub supply lifecycle
+pnpm test:e2e                         # Run active E2E suite
 
 # Circuits
 bash ./circuits/prover/build-artifacts.sh   # Build circuit artifacts (requires circom + snarkjs in PATH)

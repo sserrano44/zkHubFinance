@@ -5,22 +5,28 @@ import {TestBase} from "./utils/TestBase.sol";
 import {Constants} from "../src/libraries/Constants.sol";
 import {MockERC20} from "../src/mocks/MockERC20.sol";
 import {MockAcrossSpokePool} from "../src/mocks/MockAcrossSpokePool.sol";
+import {MockLightClientVerifier} from "../src/mocks/MockLightClientVerifier.sol";
+import {MockAcrossDepositEventVerifier} from "../src/mocks/MockAcrossDepositEventVerifier.sol";
 import {HubCustody} from "../src/hub/HubCustody.sol";
 import {HubAcrossReceiver} from "../src/hub/HubAcrossReceiver.sol";
 import {DepositProofVerifier} from "../src/zk/DepositProofVerifier.sol";
-import {Verifier} from "../src/zk/Verifier.sol";
+import {AcrossDepositProofBackend} from "../src/zk/AcrossDepositProofBackend.sol";
 import {IDepositProofVerifier} from "../src/interfaces/IDepositProofVerifier.sol";
+import {IAcrossDepositProofBackend} from "../src/interfaces/IAcrossDepositProofBackend.sol";
 
 contract HubAcrossReceiverTest is TestBase {
     uint256 internal constant SOURCE_CHAIN_ID = 8453;
+    uint256 internal constant SOURCE_BLOCK_NUMBER = 12345;
 
     address internal relayer;
     address internal attacker;
 
     MockERC20 internal hubUsdc;
     HubCustody internal custody;
+    MockLightClientVerifier internal lightClientVerifier;
+    MockAcrossDepositEventVerifier internal eventVerifier;
+    AcrossDepositProofBackend internal proofBackend;
     DepositProofVerifier internal verifier;
-    Verifier internal proofBackend;
     MockAcrossSpokePool internal spokePool;
     HubAcrossReceiver internal receiver;
 
@@ -30,9 +36,12 @@ contract HubAcrossReceiverTest is TestBase {
 
         hubUsdc = new MockERC20("Hub USDC", "USDC", 6);
         custody = new HubCustody(address(this));
-        proofBackend = new Verifier(address(this), true, keccak256(bytes("ZKHUB_DEV_PROOF")), address(0), 4);
-        verifier = new DepositProofVerifier(proofBackend);
+        lightClientVerifier = new MockLightClientVerifier();
+        eventVerifier = new MockAcrossDepositEventVerifier();
+        proofBackend = new AcrossDepositProofBackend(address(this), lightClientVerifier, eventVerifier);
         spokePool = new MockAcrossSpokePool();
+        proofBackend.setSourceSpokePool(SOURCE_CHAIN_ID, address(spokePool));
+        verifier = new DepositProofVerifier(proofBackend);
         receiver = new HubAcrossReceiver(address(this), custody, verifier, address(spokePool));
 
         custody.grantRole(custody.CANONICAL_BRIDGE_RECEIVER_ROLE(), address(receiver));
@@ -48,7 +57,7 @@ contract HubAcrossReceiverTest is TestBase {
     }
 
     function test_callbackAloneDoesNotCreditCustody() external {
-        (bytes32 pendingId,,,) = _relayPendingDeposit(2, Constants.INTENT_SUPPLY, attacker, 50e6);
+        (bytes32 pendingId,,,,,) = _relayPendingDeposit(2, Constants.INTENT_SUPPLY, attacker, 50e6);
 
         (,,,, bool consumed) = custody.deposits(SOURCE_CHAIN_ID, 2);
         assertTrue(!consumed, "deposit must not be consumed before finalize");
@@ -63,7 +72,7 @@ contract HubAcrossReceiverTest is TestBase {
     }
 
     function test_invalidProofRejected() external {
-        (bytes32 pendingId, IDepositProofVerifier.DepositWitness memory witness,,) =
+        (bytes32 pendingId, IDepositProofVerifier.DepositWitness memory witness,,,,) =
             _relayPendingDeposit(3, Constants.INTENT_SUPPLY, attacker, 40e6);
 
         vm.prank(relayer);
@@ -76,9 +85,9 @@ contract HubAcrossReceiverTest is TestBase {
     }
 
     function test_replayFinalizationRejected() external {
-        (bytes32 pendingId, IDepositProofVerifier.DepositWitness memory witness,,) =
+        (bytes32 pendingId, IDepositProofVerifier.DepositWitness memory witness, bytes32 sourceBlockHash, bytes32 receiptsRoot,,) =
             _relayPendingDeposit(4, Constants.INTENT_SUPPLY, attacker, 75e6);
-        bytes memory proof = bytes("ZKHUB_DEV_PROOF");
+        bytes memory proof = _buildCanonicalProof(witness, sourceBlockHash, receiptsRoot);
 
         vm.prank(attacker);
         receiver.finalizePendingDeposit(pendingId, proof, witness);
@@ -91,9 +100,9 @@ contract HubAcrossReceiverTest is TestBase {
     }
 
     function test_validCallbackAndProofCreditsExactlyOnce() external {
-        (bytes32 pendingId, IDepositProofVerifier.DepositWitness memory witness,,) =
+        (bytes32 pendingId, IDepositProofVerifier.DepositWitness memory witness, bytes32 sourceBlockHash, bytes32 receiptsRoot,,) =
             _relayPendingDeposit(5, Constants.INTENT_REPAY, attacker, 120e6);
-        bytes memory proof = bytes("ZKHUB_DEV_PROOF");
+        bytes memory proof = _buildCanonicalProof(witness, sourceBlockHash, receiptsRoot);
 
         vm.prank(attacker);
         receiver.finalizePendingDeposit(pendingId, proof, witness);
@@ -110,14 +119,20 @@ contract HubAcrossReceiverTest is TestBase {
     }
 
     function test_operatorCannotForgeDepositWithoutValidProof() external {
-        (bytes32 pendingId, IDepositProofVerifier.DepositWitness memory witness, bytes32 messageHash,) =
-            _relayPendingDeposit(6, Constants.INTENT_SUPPLY, attacker, 33e6);
+        (
+            bytes32 pendingId,
+            IDepositProofVerifier.DepositWitness memory witness,
+            bytes32 sourceBlockHash,
+            bytes32 receiptsRoot,
+            bytes32 messageHash,
+        ) = _relayPendingDeposit(6, Constants.INTENT_SUPPLY, attacker, 33e6);
 
         IDepositProofVerifier.DepositWitness memory forgedWitness = IDepositProofVerifier.DepositWitness({
             sourceChainId: witness.sourceChainId,
             depositId: witness.depositId,
             intentType: witness.intentType,
             user: witness.user,
+            spokeToken: witness.spokeToken,
             hubAsset: witness.hubAsset,
             amount: witness.amount + 1,
             sourceTxHash: witness.sourceTxHash,
@@ -127,7 +142,7 @@ contract HubAcrossReceiverTest is TestBase {
 
         vm.prank(relayer);
         vm.expectRevert(abi.encodeWithSelector(HubAcrossReceiver.WitnessMismatch.selector, pendingId));
-        receiver.finalizePendingDeposit(pendingId, abi.encode(forgedWitness), forgedWitness);
+        receiver.finalizePendingDeposit(pendingId, _buildCanonicalProof(witness, sourceBlockHash, receiptsRoot), forgedWitness);
 
         vm.prank(relayer);
         vm.expectRevert(abi.encodeWithSelector(HubAcrossReceiver.InvalidDepositProof.selector));
@@ -142,6 +157,8 @@ contract HubAcrossReceiverTest is TestBase {
         returns (
             bytes32 pendingId,
             IDepositProofVerifier.DepositWitness memory witness,
+            bytes32 sourceBlockHash,
+            bytes32 receiptsRoot,
             bytes32 messageHash,
             bytes memory message
         )
@@ -150,6 +167,8 @@ contract HubAcrossReceiverTest is TestBase {
         messageHash = keccak256(message);
         bytes32 sourceTxHash = keccak256(abi.encodePacked("source", depositId, intentType, user, amount));
         uint256 sourceLogIndex = depositId + 99;
+        sourceBlockHash = keccak256(abi.encodePacked("source-block", depositId, intentType));
+        receiptsRoot = keccak256(abi.encodePacked("receipts-root", depositId, intentType));
 
         pendingId = receiver.pendingIdFor(
             SOURCE_CHAIN_ID,
@@ -177,12 +196,55 @@ contract HubAcrossReceiverTest is TestBase {
             depositId: depositId,
             intentType: intentType,
             user: user,
+            spokeToken: address(hubUsdc),
             hubAsset: address(hubUsdc),
             amount: amount,
             sourceTxHash: sourceTxHash,
             sourceLogIndex: sourceLogIndex,
             messageHash: messageHash
         });
+    }
+
+    function _buildCanonicalProof(
+        IDepositProofVerifier.DepositWitness memory witness,
+        bytes32 sourceBlockHash,
+        bytes32 receiptsRoot
+    ) internal view returns (bytes memory) {
+        bytes memory finalityProof = abi.encode(
+            MockLightClientVerifier.FinalityProofData({
+                sourceChainId: witness.sourceChainId,
+                sourceBlockNumber: SOURCE_BLOCK_NUMBER,
+                sourceBlockHash: sourceBlockHash
+            })
+        );
+
+        bytes memory inclusionProof = abi.encode(
+            MockAcrossDepositEventVerifier.InclusionProofData({
+                sourceChainId: witness.sourceChainId,
+                sourceBlockHash: sourceBlockHash,
+                receiptsRoot: receiptsRoot,
+                sourceTxHash: witness.sourceTxHash,
+                sourceLogIndex: witness.sourceLogIndex,
+                sourceSpokePool: address(spokePool),
+                inputToken: witness.spokeToken,
+                outputToken: witness.hubAsset,
+                outputAmount: witness.amount,
+                destinationChainId: block.chainid,
+                recipient: address(receiver),
+                messageHash: witness.messageHash
+            })
+        );
+
+        IAcrossDepositProofBackend.CanonicalSourceProof memory canonical = IAcrossDepositProofBackend.CanonicalSourceProof({
+            sourceBlockNumber: SOURCE_BLOCK_NUMBER,
+            sourceBlockHash: sourceBlockHash,
+            receiptsRoot: receiptsRoot,
+            sourceSpokePool: address(spokePool),
+            finalityProof: finalityProof,
+            inclusionProof: inclusionProof
+        });
+
+        return abi.encode(canonical);
     }
 
     function _encodeMessage(uint256 depositId, uint8 intentType, address user, uint256 amount)

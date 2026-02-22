@@ -15,7 +15,14 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { HubSettlementAbi } from "@elhub/abis";
 import { buildBatch } from "./batch";
-import { buildDepositProofBatch, type DepositWitnessProofInput } from "./deposit-proof";
+import {
+  buildCanonicalBorrowFillProof,
+  buildCanonicalDepositProof,
+  type BorrowFillWitnessProofInput,
+  type DepositWitnessProofInput,
+  type SourceBorrowFillProofInput,
+  type SourceDepositProofInput
+} from "./deposit-proof";
 import { CircuitProofProvider, DevProofProvider, type ProofProvider } from "./proof";
 import type { QueuedAction } from "./types";
 import {
@@ -172,11 +179,40 @@ const depositWitnessSchema = z.object({
   depositId: z.string(),
   intentType: z.number().int().min(1).max(2),
   user: z.string().startsWith("0x"),
+  spokeToken: z.string().startsWith("0x"),
   hubAsset: z.string().startsWith("0x"),
   amount: z.string(),
   sourceTxHash: z.string().startsWith("0x"),
   sourceLogIndex: z.string(),
-  messageHash: z.string().startsWith("0x")
+  messageHash: z.string().startsWith("0x"),
+  sourceBlockNumber: z.string(),
+  sourceBlockHash: z.string().startsWith("0x"),
+  sourceReceiptsRoot: z.string().startsWith("0x"),
+  sourceSpokePool: z.string().startsWith("0x"),
+  destinationReceiver: z.string().startsWith("0x"),
+  destinationChainId: z.string()
+});
+
+const borrowFillWitnessSchema = z.object({
+  sourceChainId: z.string(),
+  intentId: z.string().startsWith("0x"),
+  intentType: z.number().int().min(3).max(3),
+  user: z.string().startsWith("0x"),
+  recipient: z.string().startsWith("0x"),
+  spokeToken: z.string().startsWith("0x"),
+  hubAsset: z.string().startsWith("0x"),
+  amount: z.string(),
+  fee: z.string(),
+  relayer: z.string().startsWith("0x"),
+  sourceTxHash: z.string().startsWith("0x"),
+  sourceLogIndex: z.string(),
+  messageHash: z.string().startsWith("0x"),
+  sourceBlockNumber: z.string(),
+  sourceBlockHash: z.string().startsWith("0x"),
+  sourceReceiptsRoot: z.string().startsWith("0x"),
+  sourceReceiver: z.string().startsWith("0x"),
+  destinationFinalizer: z.string().startsWith("0x"),
+  destinationChainId: z.string()
 });
 
 const queueStore: ProverQueueStore = proverStoreKind === "sqlite"
@@ -228,17 +264,40 @@ app.post("/internal/deposit-proof", async (req, res) => {
 
   try {
     const witness = normalizeDepositWitness(parsed.data);
-    const batch = buildDepositProofBatch(witness);
-    const { proof, publicInputs } = await proofProvider.prove(batch);
+    const sourceProof = normalizeSourceDepositProof(parsed.data);
+    const proof = buildCanonicalDepositProof(witness, sourceProof);
 
     auditLog(req as RequestWithMeta, "deposit_proof_ok");
     res.json({
       ok: true,
-      proof,
-      publicInputs: publicInputs.map((value) => value.toString())
+      proof
     });
   } catch (error) {
     auditLog(req as RequestWithMeta, "deposit_proof_error", { message: (error as Error).message });
+    res.status(500).json({ ok: false, error: (error as Error).message });
+  }
+});
+
+app.post("/internal/borrow-fill-proof", async (req, res) => {
+  const parsed = borrowFillWitnessSchema.safeParse(req.body);
+  if (!parsed.success) {
+    auditLog(req as RequestWithMeta, "borrow_fill_proof_rejected", { reason: "invalid_payload" });
+    res.status(400).json({ error: parsed.error.flatten() });
+    return;
+  }
+
+  try {
+    const witness = normalizeBorrowFillWitness(parsed.data);
+    const sourceProof = normalizeSourceBorrowFillProof(parsed.data);
+    const proof = buildCanonicalBorrowFillProof(witness, sourceProof);
+
+    auditLog(req as RequestWithMeta, "borrow_fill_proof_ok");
+    res.json({
+      ok: true,
+      proof
+    });
+  } catch (error) {
+    auditLog(req as RequestWithMeta, "borrow_fill_proof_error", { message: (error as Error).message });
     res.status(500).json({ ok: false, error: (error as Error).message });
   }
 });
@@ -440,11 +499,52 @@ function normalizeDepositWitness(input: z.infer<typeof depositWitnessSchema>): D
     depositId: BigInt(input.depositId),
     intentType: input.intentType,
     user: input.user as Address,
+    spokeToken: input.spokeToken as Address,
     hubAsset: input.hubAsset as Address,
     amount: BigInt(input.amount),
     sourceTxHash: input.sourceTxHash as Hex,
     sourceLogIndex: BigInt(input.sourceLogIndex),
     messageHash: input.messageHash as Hex
+  };
+}
+
+function normalizeSourceDepositProof(input: z.infer<typeof depositWitnessSchema>): SourceDepositProofInput {
+  return {
+    sourceBlockNumber: BigInt(input.sourceBlockNumber),
+    sourceBlockHash: input.sourceBlockHash as Hex,
+    sourceReceiptsRoot: input.sourceReceiptsRoot as Hex,
+    sourceSpokePool: input.sourceSpokePool as Address,
+    destinationReceiver: input.destinationReceiver as Address,
+    destinationChainId: BigInt(input.destinationChainId)
+  };
+}
+
+function normalizeBorrowFillWitness(input: z.infer<typeof borrowFillWitnessSchema>): BorrowFillWitnessProofInput {
+  return {
+    sourceChainId: BigInt(input.sourceChainId),
+    intentId: input.intentId as Hex,
+    intentType: input.intentType,
+    user: input.user as Address,
+    recipient: input.recipient as Address,
+    spokeToken: input.spokeToken as Address,
+    hubAsset: input.hubAsset as Address,
+    amount: BigInt(input.amount),
+    fee: BigInt(input.fee),
+    relayer: input.relayer as Address,
+    sourceTxHash: input.sourceTxHash as Hex,
+    sourceLogIndex: BigInt(input.sourceLogIndex),
+    messageHash: input.messageHash as Hex
+  };
+}
+
+function normalizeSourceBorrowFillProof(input: z.infer<typeof borrowFillWitnessSchema>): SourceBorrowFillProofInput {
+  return {
+    sourceBlockNumber: BigInt(input.sourceBlockNumber),
+    sourceBlockHash: input.sourceBlockHash as Hex,
+    sourceReceiptsRoot: input.sourceReceiptsRoot as Hex,
+    sourceReceiver: input.sourceReceiver as Address,
+    destinationFinalizer: input.destinationFinalizer as Address,
+    destinationChainId: BigInt(input.destinationChainId)
   };
 }
 

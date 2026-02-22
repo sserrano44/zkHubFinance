@@ -6,11 +6,11 @@ Multi-chain intent-based DeFi money market with hub-side accounting on Ethereum 
 
 ## What this repo includes
 - Hub contracts (Ethereum mainnet): money market, risk manager, intent inbox, lock manager, settlement, verifier, custody, token registry.
-- Spoke contracts (Base/BSC): portal for supply/repay initiation and borrow/withdraw fills.
+- Spoke contracts (Base/BSC): portal for supply/repay initiation + withdraw fills, and Across borrow receiver for borrow fills.
 - ZK plumbing: verifier interface + dev mode + circuit scaffold.
 - Services:
   - `services/indexer`: canonical lifecycle/status API.
-  - `services/relayer`: lock/fill orchestration + spoke deposit bridging simulation.
+  - `services/relayer`: lock/Across dispatch orchestration + proof finalization for deposits and borrow fills.
   - `services/prover`: settlement batching + proof generation plumbing.
 - Next.js app (`apps/web`) with wallet flows for dashboard, supply, borrow, repay, withdraw, activity.
 - Monorepo packages:
@@ -73,8 +73,11 @@ pnpm dev
 - `HubSettlement`: batched settlement with verifier, replay protection, lock/fill/deposit checks.
 - `Verifier`: `DEV_MODE` dummy proof support + real verifier slot.
 - `DepositProofVerifier`: witness->public-input adapter for deposit proof verification.
+- `BorrowFillProofVerifier`: witness->public-input adapter for borrow fill proof verification.
 - `HubCustody`: bridged funds intake + controlled release to market.
 - `HubAcrossReceiver`: Across callback receiver that records pending fills and finalizes deposits only after proof verification.
+- `HubAcrossBorrowDispatcher`: hub-side Across dispatcher for borrow fulfillment transport.
+- `HubAcrossBorrowFinalizer`: hub-side proof-gated recorder for borrow fill evidence.
 - `TokenRegistry`: token mappings (hub/spoke), decimals, risk, bridge adapter id.
 
 ### Spoke (Base / BSC)
@@ -82,6 +85,7 @@ pnpm dev
 - `MockBridgeAdapter`: local bridging simulation event sink.
 - `AcrossBridgeAdapter`: Across V3 transport adapter with route + caller controls and message binding for proof finalization.
 - `MockAcrossSpokePool`: local Across-style SpokePool used for source deposit event emission and local callback simulation in E2E harnesses.
+- `SpokeAcrossBorrowReceiver`: spoke Across callback receiver that transfers borrow proceeds and emits proof-bound source event.
 - `CanonicalBridgeAdapter`: production adapter with allowlisted callers and per-token canonical routes.
 
 ## End-to-end lifecycle
@@ -95,10 +99,20 @@ pnpm dev
 6. Prover batches deposit actions and submits settlement proof.
 7. Hub settlement credits supply or repays debt.
 
-### Borrow / Withdraw
+### Borrow
 1. User signs EIP-712 intent in UI.
 2. Relayer locks intent on hub (`HubLockManager.lock`).
-3. Relayer fills user on spoke (`SpokePortal.fillBorrow/fillWithdraw`).
+3. Relayer dispatches hub->spoke Across fill via `HubAcrossBorrowDispatcher.dispatchBorrowFill`.
+4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage` and emits `BorrowFillRecorded`.
+5. Relayer/prover submit borrow fill proof to `HubAcrossBorrowFinalizer.finalizeBorrowFill`.
+6. Finalizer records proof-verified borrow fill evidence in settlement.
+7. Prover batches finalize actions and settles.
+8. Settlement consumes lock, updates accounting, reimburses relayer on hub.
+
+### Withdraw
+1. User signs EIP-712 intent in UI.
+2. Relayer locks intent on hub (`HubLockManager.lock`).
+3. Relayer fills user on spoke (`SpokePortal.fillWithdraw`).
 4. Relayer records fill evidence on hub settlement.
 5. Prover batches finalize actions and settles.
 6. Settlement consumes lock, updates accounting, reimburses relayer on hub.
@@ -188,7 +202,7 @@ The E2E runner will:
 1. build + deploy contracts to the fork nodes
 2. start `indexer`, `prover`, and `relayer`
 3. run supply->settle flow
-4. run borrow->lock/fill->settle flow
+4. run borrow->lock/Across-dispatch/proof-finalize->settle flow
 5. assert hub supply/debt state
 
 Notes:
@@ -225,83 +239,14 @@ This wrapper runs `scripts/e2e-fork.mjs` with `E2E_SUPPLY_ONLY=1` and asserts:
 
 For local/fork tests only, the script simulates the destination relay callback with `MockAcrossSpokePool.relayV3Deposit`; production relayer runtime no longer performs this relay simulation.
 
-### Circuit-mode fork E2E (real Groth16 path, no dev verifier)
+### E2E command set
 
-This flow enforces:
-- `PROVER_MODE=circuit`
-- `HUB_VERIFIER_DEV_MODE=0`
-- non-zero `HUB_GROTH16_VERIFIER_ADDRESS`
+Active E2E commands:
+1. `pnpm test:e2e:base-mainnet-supply` (smoke path for inbound supply lifecycle)
+2. `pnpm test:e2e:fork` (full supply + borrow lifecycle)
+3. `pnpm test:e2e` (runs both active E2E commands)
 
-#### 1) Prepare RPC endpoints
-
-```bash
-# Option A: Local anvil forks
-anvil --fork-url "$HUB_RPC_URL" --port 8545
-anvil --fork-url "$SPOKE_BASE_RPC_URL" --port 8546
-```
-
-#### 2) Build circuit artifacts
-
-```bash
-bash ./circuits/prover/build-artifacts.sh
-```
-
-Artifacts expected by the prover:
-- `circuits/prover/artifacts/SettlementBatchRoot_js/SettlementBatchRoot.wasm`
-- `circuits/prover/artifacts/SettlementBatchRoot_final.zkey`
-
-#### 3) Deploy generated Groth16 verifier on hub fork
-
-`snarkjs zkey export solidityverifier` produces `circuits/prover/artifacts/Groth16Verifier.generated.sol`.
-
-Example deploy:
-
-```bash
-forge create \
-  --rpc-url http://127.0.0.1:8545 \
-  --private-key "$DEPLOYER_PRIVATE_KEY" \
-  --broadcast \
-  ./circuits/prover/artifacts/Groth16Verifier.generated.sol:Groth16Verifier
-```
-
-Copy the deployed verifier address.
-
-If your generated contract name differs from `Groth16Verifier`, replace `:Groth16Verifier` accordingly.
-
-#### 4) Run circuit-mode E2E (one command)
-
-```bash
-pnpm test:e2e:fork:circuit
-```
-
-`test:e2e:fork:circuit` is now one-shot:
-1. runs `scripts/e2e-fork-circuit-prepare.mjs --json` to resolve/deploy verifier env
-2. runs `scripts/e2e-fork-circuit.mjs` with that resolved env
-
-If you need to run the circuit runner directly with pre-set env only:
-
-```bash
-pnpm test:e2e:fork:circuit:exec
-```
-
-#### 5) Prepare helper (manual/debug)
-
-You can use:
-
-```bash
-pnpm test:e2e:fork:circuit:prepare
-```
-
-Behavior:
-1. Loads `.env` and resolves Hub/Spoke RPCs (including Tenderly vars).
-2. If `HUB_GROTH16_VERIFIER_ADDRESS` is missing and generated verifier source exists, auto-deploys it with `forge create --broadcast`.
-3. Prints exact `export ...` lines and the final `pnpm test:e2e:fork:circuit` command to run.
-
-Optional env overrides for prepare script:
-1. `HUB_GROTH16_VERIFIER_SOURCE`
-2. `HUB_GROTH16_VERIFIER_CONTRACT`
-3. `DEPLOYER_PRIVATE_KEY`
-4. `ENABLE_FORGE_BROADCAST` (default `1`; set `0` only for debug dry-runs)
+Circuit-mode E2E wrappers were removed because the current deposit-proof path is not yet circuit-compatible end-to-end. They should be reintroduced only after canonical light-client/ZK deposit proof constraints are implemented.
 
 ## CI
 - GitHub Actions workflow: `.github/workflows/ci.yml`
@@ -361,11 +306,21 @@ After local deploy:
   - deploy `HubAcrossReceiver(admin, custody, depositProofVerifier, hubSpokePool)`
   - grant `CANONICAL_BRIDGE_RECEIVER_ROLE` on `HubCustody` to `HubAcrossReceiver`
   - do not grant attester/operator EOAs any custody bridge registration role
+- Configure Across borrow fulfillment path:
+  - deploy `HubAcrossBorrowDispatcher(admin, hubAcrossBorrowFinalizer)`
+  - deploy `SpokeAcrossBorrowReceiver(admin, spokeAcrossSpokePool)`
+  - configure dispatcher routes per hub asset (`setRoute`) and allow relayer caller (`setAllowedCaller`)
+  - grant `PROOF_FILL_ROLE` on `HubSettlement` to `HubAcrossBorrowFinalizer`
 - Relayer inbound behavior:
   - observe spoke `V3FundsDeposited` for source metadata (`initiated`)
   - observe hub `PendingDepositRecorded` for `pending_fill`
   - request proof from prover and call `finalizePendingDeposit`
   - do not call `relayV3Deposit` in production runtime
+- Relayer borrow behavior:
+  - lock intent on hub and dispatch borrow via `HubAcrossBorrowDispatcher`
+  - observe spoke `BorrowFillRecorded`
+  - request proof from prover and call `HubAcrossBorrowFinalizer.finalizeBorrowFill`
+  - do not call direct spoke `fillBorrow` in production runtime
 - For settlement verifier, deploy generated Groth16 verifier bytecode and wire it through `Groth16VerifierAdapter`:
   - deploy generated verifier (from `snarkjs zkey export solidityverifier`)
   - deploy `Groth16VerifierAdapter(owner, generatedVerifier)`

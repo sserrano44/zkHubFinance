@@ -252,7 +252,30 @@ async function main() {
     custody,
     lockManager
   ]);
-  const depositProofVerifier = await deploy(hubWallet, hubPublic, "DepositProofVerifier", [verifier]);
+  const lightClientVerifier = await deploy(hubWallet, hubPublic, "MockLightClientVerifier", []);
+  const acrossDepositEventVerifier = await deploy(hubWallet, hubPublic, "MockAcrossDepositEventVerifier", []);
+  const depositProofBackend = await deploy(hubWallet, hubPublic, "AcrossDepositProofBackend", [
+    deployer.address,
+    lightClientVerifier,
+    acrossDepositEventVerifier
+  ]);
+  const depositProofVerifier = await deploy(hubWallet, hubPublic, "DepositProofVerifier", [depositProofBackend]);
+  const acrossBorrowFillEventVerifier = await deploy(hubWallet, hubPublic, "MockAcrossBorrowFillEventVerifier", []);
+  const borrowFillProofBackend = await deploy(hubWallet, hubPublic, "AcrossBorrowFillProofBackend", [
+    deployer.address,
+    lightClientVerifier,
+    acrossBorrowFillEventVerifier
+  ]);
+  const borrowFillProofVerifier = await deploy(hubWallet, hubPublic, "BorrowFillProofVerifier", [borrowFillProofBackend]);
+  const hubAcrossBorrowFinalizer = await deploy(hubWallet, hubPublic, "HubAcrossBorrowFinalizer", [
+    deployer.address,
+    settlement,
+    borrowFillProofVerifier
+  ]);
+  const hubAcrossBorrowDispatcher = await deploy(hubWallet, hubPublic, "HubAcrossBorrowDispatcher", [
+    deployer.address,
+    hubAcrossBorrowFinalizer
+  ]);
   const hubAcrossSpokePool = await deploy(hubWallet, hubPublic, "MockAcrossSpokePool", []);
   const hubAcrossReceiver = await deploy(hubWallet, hubPublic, "HubAcrossReceiver", [
     deployer.address,
@@ -264,6 +287,10 @@ async function main() {
   console.log("Deploying spoke protocol...");
   const spokePortal = await deploy(spokeWallet, spokePublic, "SpokePortal", [deployer.address, BigInt(HUB_CHAIN_ID)]);
   const spokeAcrossSpokePool = await deploy(spokeWallet, spokePublic, "MockAcrossSpokePool", []);
+  const spokeBorrowReceiver = await deploy(spokeWallet, spokePublic, "SpokeAcrossBorrowReceiver", [
+    deployer.address,
+    spokeAcrossSpokePool
+  ]);
   const spokeBridgeAdapter = await deploy(spokeWallet, spokePublic, "AcrossBridgeAdapter", [deployer.address, BigInt(HUB_CHAIN_ID)]);
 
   const tokenRegistryAbi = loadArtifact("TokenRegistry").abi;
@@ -275,6 +302,9 @@ async function main() {
   const settlementAbi = loadArtifact("HubSettlement").abi;
   const portalAbi = loadArtifact("SpokePortal").abi;
   const acrossBridgeAdapterAbi = loadArtifact("AcrossBridgeAdapter").abi;
+  const depositProofBackendAbi = loadArtifact("AcrossDepositProofBackend").abi;
+  const borrowFillProofBackendAbi = loadArtifact("AcrossBorrowFillProofBackend").abi;
+  const hubAcrossBorrowDispatcherAbi = loadArtifact("HubAcrossBorrowDispatcher").abi;
   const erc20Abi = loadArtifact("MockERC20").abi;
   const oracleAbi = loadArtifact("MockOracle").abi;
 
@@ -352,6 +382,7 @@ async function main() {
   const CANONICAL_BRIDGE_RECEIVER_ROLE = keccak256(stringToHex("CANONICAL_BRIDGE_RECEIVER_ROLE"));
   const SETTLEMENT_ROLE = keccak256(stringToHex("SETTLEMENT_ROLE"));
   const RELAYER_ROLE = keccak256(stringToHex("RELAYER_ROLE"));
+  const PROOF_FILL_ROLE = keccak256(stringToHex("PROOF_FILL_ROLE"));
 
   await write(hubWallet, hubPublic, {
     address: custody,
@@ -361,6 +392,12 @@ async function main() {
   });
   await write(hubWallet, hubPublic, { address: custody, abi: custodyAbi, functionName: "grantRole", args: [SETTLEMENT_ROLE, settlement] });
   await write(hubWallet, hubPublic, { address: settlement, abi: settlementAbi, functionName: "grantRole", args: [RELAYER_ROLE, relayer.address] });
+  await write(hubWallet, hubPublic, {
+    address: settlement,
+    abi: settlementAbi,
+    functionName: "grantRole",
+    args: [PROOF_FILL_ROLE, hubAcrossBorrowFinalizer]
+  });
 
   await write(spokeWallet, spokePublic, { address: spokePortal, abi: portalAbi, functionName: "setBridgeAdapter", args: [spokeBridgeAdapter] });
   await write(spokeWallet, spokePublic, { address: spokePortal, abi: portalAbi, functionName: "setHubRecipient", args: [hubAcrossReceiver] });
@@ -376,6 +413,32 @@ async function main() {
       abi: acrossBridgeAdapterAbi,
       functionName: "setRoute",
       args: [row.spoke, spokeAcrossSpokePool, row.hub, ZERO_ADDRESS, 300_000, true]
+    });
+  }
+  await write(hubWallet, hubPublic, {
+    address: depositProofBackend,
+    abi: depositProofBackendAbi,
+    functionName: "setSourceSpokePool",
+    args: [BigInt(SPOKE_CHAIN_ID), spokeAcrossSpokePool]
+  });
+  await write(hubWallet, hubPublic, {
+    address: borrowFillProofBackend,
+    abi: borrowFillProofBackendAbi,
+    functionName: "setSourceReceiver",
+    args: [BigInt(SPOKE_CHAIN_ID), spokeBorrowReceiver]
+  });
+  await write(hubWallet, hubPublic, {
+    address: hubAcrossBorrowDispatcher,
+    abi: hubAcrossBorrowDispatcherAbi,
+    functionName: "setAllowedCaller",
+    args: [relayer.address, true]
+  });
+  for (const row of tokenRows) {
+    await write(hubWallet, hubPublic, {
+      address: hubAcrossBorrowDispatcher,
+      abi: hubAcrossBorrowDispatcherAbi,
+      functionName: "setRoute",
+      args: [row.hub, hubAcrossSpokePool, row.spoke, spokeBorrowReceiver, ZERO_ADDRESS, 300_000, true]
     });
   }
 
@@ -399,12 +462,24 @@ async function main() {
       functionName: "mint",
       args: [hubAcrossSpokePool, parseUnits("1000000", row.decimals)]
     });
+    await write(hubWallet, hubPublic, {
+      address: row.hub,
+      abi: erc20Abi,
+      functionName: "mint",
+      args: [relayer.address, parseUnits("1000000", row.decimals)]
+    });
 
     await write(spokeWallet, spokePublic, {
       address: row.spoke,
       abi: erc20Abi,
       functionName: "mint",
       args: [relayer.address, parseUnits("1000000", row.decimals)]
+    });
+    await write(spokeWallet, spokePublic, {
+      address: row.spoke,
+      abi: erc20Abi,
+      functionName: "mint",
+      args: [spokeAcrossSpokePool, parseUnits("1000000", row.decimals)]
     });
   }
 
@@ -421,7 +496,15 @@ async function main() {
       custody,
       hubAcrossReceiver,
       hubAcrossSpokePool,
+      lightClientVerifier,
+      acrossDepositEventVerifier,
+      depositProofBackend,
       depositProofVerifier,
+      acrossBorrowFillEventVerifier,
+      borrowFillProofBackend,
+      borrowFillProofVerifier,
+      hubAcrossBorrowFinalizer,
+      hubAcrossBorrowDispatcher,
       verifierDevMode: HUB_VERIFIER_DEV_MODE,
       groth16Verifier,
       groth16VerifierAdapter,
@@ -433,7 +516,8 @@ async function main() {
       chainId: SPOKE_CHAIN_ID,
       portal: spokePortal,
       bridgeAdapter: spokeBridgeAdapter,
-      acrossSpokePool: spokeAcrossSpokePool
+      acrossSpokePool: spokeAcrossSpokePool,
+      borrowReceiver: spokeBorrowReceiver
     },
     tokens: {
       WETH: { hub: hubWeth, spoke: spokeWeth, decimals: 18 },
@@ -468,9 +552,18 @@ HUB_SETTLEMENT_ADDRESS=${settlement}
 HUB_CUSTODY_ADDRESS=${custody}
 HUB_ACROSS_RECEIVER_ADDRESS=${hubAcrossReceiver}
 HUB_ACROSS_SPOKE_POOL_ADDRESS=${hubAcrossSpokePool}
+HUB_LIGHT_CLIENT_VERIFIER_ADDRESS=${lightClientVerifier}
+HUB_ACROSS_DEPOSIT_EVENT_VERIFIER_ADDRESS=${acrossDepositEventVerifier}
+HUB_DEPOSIT_PROOF_BACKEND_ADDRESS=${depositProofBackend}
 HUB_DEPOSIT_PROOF_VERIFIER_ADDRESS=${depositProofVerifier}
+HUB_ACROSS_BORROW_EVENT_VERIFIER_ADDRESS=${acrossBorrowFillEventVerifier}
+HUB_BORROW_FILL_PROOF_BACKEND_ADDRESS=${borrowFillProofBackend}
+HUB_BORROW_FILL_PROOF_VERIFIER_ADDRESS=${borrowFillProofVerifier}
+HUB_ACROSS_BORROW_FINALIZER_ADDRESS=${hubAcrossBorrowFinalizer}
+HUB_ACROSS_BORROW_DISPATCHER_ADDRESS=${hubAcrossBorrowDispatcher}
 SPOKE_PORTAL_ADDRESS=${spokePortal}
 SPOKE_ACROSS_SPOKE_POOL_ADDRESS=${spokeAcrossSpokePool}
+SPOKE_BORROW_RECEIVER_ADDRESS=${spokeBorrowReceiver}
 
 RELAYER_PRIVATE_KEY=${RELAYER_PRIVATE_KEY}
 BRIDGE_PRIVATE_KEY=${BRIDGE_PRIVATE_KEY}

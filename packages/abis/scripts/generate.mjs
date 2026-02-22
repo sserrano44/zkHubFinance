@@ -13,12 +13,14 @@ const contracts = [
   "HubSettlement",
   "HubCustody",
   "HubAcrossReceiver",
-  "CanonicalBridgeReceiverAdapter",
+  "HubAcrossBorrowDispatcher",
+  "HubAcrossBorrowFinalizer",
   "TokenRegistry",
   "KinkInterestRateModel",
   "MockERC20",
   "MockOracle",
   "SpokePortal",
+  "SpokeAcrossBorrowReceiver",
   "MockBridgeAdapter",
   "AcrossBridgeAdapter",
   "CanonicalBridgeAdapter",
@@ -26,7 +28,9 @@ const contracts = [
   "MockCanonicalTokenBridge",
   "Verifier",
   "Groth16VerifierAdapter",
-  "DepositProofVerifierStub"
+  "DepositProofVerifierStub",
+  "BorrowFillProofVerifier",
+  "AcrossBorrowFillProofBackend"
 ];
 
 if (!fs.existsSync(outDir)) {

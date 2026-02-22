@@ -1,0 +1,179 @@
+[
+    {
+        "type": "constructor",
+        "inputs": [
+            {
+                "name": "backend_",
+                "type": "address",
+                "internalType": "contract IAcrossBorrowFillProofBackend"
+            }
+        ],
+        "stateMutability": "nonpayable"
+    },
+    {
+        "type": "function",
+        "name": "backend",
+        "inputs": [],
+        "outputs": [
+            {
+                "name": "",
+                "type": "address",
+                "internalType": "contract IAcrossBorrowFillProofBackend"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "function",
+        "name": "decodeCanonicalSourceProof",
+        "inputs": [
+            {
+                "name": "proof",
+                "type": "bytes",
+                "internalType": "bytes"
+            }
+        ],
+        "outputs": [
+            {
+                "name": "decoded",
+                "type": "tuple",
+                "internalType": "struct IAcrossBorrowFillProofBackend.CanonicalSourceProof",
+                "components": [
+                    {
+                        "name": "sourceBlockNumber",
+                        "type": "uint256",
+                        "internalType": "uint256"
+                    },
+                    {
+                        "name": "sourceBlockHash",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                    },
+                    {
+                        "name": "receiptsRoot",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                    },
+                    {
+                        "name": "sourceReceiver",
+                        "type": "address",
+                        "internalType": "address"
+                    },
+                    {
+                        "name": "finalityProof",
+                        "type": "bytes",
+                        "internalType": "bytes"
+                    },
+                    {
+                        "name": "inclusionProof",
+                        "type": "bytes",
+                        "internalType": "bytes"
+                    }
+                ]
+            }
+        ],
+        "stateMutability": "pure"
+    },
+    {
+        "type": "function",
+        "name": "verifyBorrowFillProof",
+        "inputs": [
+            {
+                "name": "proof",
+                "type": "bytes",
+                "internalType": "bytes"
+            },
+            {
+                "name": "witness",
+                "type": "tuple",
+                "internalType": "struct IBorrowFillProofVerifier.BorrowFillWitness",
+                "components": [
+                    {
+                        "name": "sourceChainId",
+                        "type": "uint256",
+                        "internalType": "uint256"
+                    },
+                    {
+                        "name": "intentId",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                    },
+                    {
+                        "name": "intentType",
+                        "type": "uint8",
+                        "internalType": "uint8"
+                    },
+                    {
+                        "name": "user",
+                        "type": "address",
+                        "internalType": "address"
+                    },
+                    {
+                        "name": "recipient",
+                        "type": "address",
+                        "internalType": "address"
+                    },
+                    {
+                        "name": "spokeToken",
+                        "type": "address",
+                        "internalType": "address"
+                    },
+                    {
+                        "name": "hubAsset",
+                        "type": "address",
+                        "internalType": "address"
+                    },
+                    {
+                        "name": "amount",
+                        "type": "uint256",
+                        "internalType": "uint256"
+                    },
+                    {
+                        "name": "fee",
+                        "type": "uint256",
+                        "internalType": "uint256"
+                    },
+                    {
+                        "name": "relayer",
+                        "type": "address",
+                        "internalType": "address"
+                    },
+                    {
+                        "name": "sourceTxHash",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                    },
+                    {
+                        "name": "sourceLogIndex",
+                        "type": "uint256",
+                        "internalType": "uint256"
+                    },
+                    {
+                        "name": "messageHash",
+                        "type": "bytes32",
+                        "internalType": "bytes32"
+                    }
+                ]
+            }
+        ],
+        "outputs": [
+            {
+                "name": "",
+                "type": "bool",
+                "internalType": "bool"
+            }
+        ],
+        "stateMutability": "view"
+    },
+    {
+        "type": "error",
+        "name": "InvalidBackend",
+        "inputs": [
+            {
+                "name": "backend",
+                "type": "address",
+                "internalType": "address"
+            }
+        ]
+    }
+]

@@ -74,6 +74,7 @@ contract HubAcrossReceiver is AccessControl {
         uint256 depositId,
         uint8 intentType,
         address user,
+        address spokeToken,
         address hubAsset,
         uint256 amount,
         bytes32 sourceTxHash,
@@ -203,7 +204,8 @@ contract HubAcrossReceiver is AccessControl {
         if (
             pending.sourceChainId != witness.sourceChainId || pending.depositId != witness.depositId
                 || pending.intentType != witness.intentType || pending.user != witness.user
-                || pending.hubAsset != witness.hubAsset || pending.amount != witness.amount
+                || pending.spokeToken != witness.spokeToken || pending.hubAsset != witness.hubAsset
+                || pending.amount != witness.amount
                 || pending.messageHash != witness.messageHash
         ) {
             revert WitnessMismatch(pendingId);
@@ -247,6 +249,7 @@ contract HubAcrossReceiver is AccessControl {
             witness.depositId,
             witness.intentType,
             witness.user,
+            witness.spokeToken,
             witness.hubAsset,
             witness.amount,
             witness.sourceTxHash,

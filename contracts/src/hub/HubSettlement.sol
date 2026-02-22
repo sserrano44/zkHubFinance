@@ -16,6 +16,7 @@ import {IHubSettlement} from "../interfaces/IHubSettlement.sol";
 contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettlement {
     bytes32 public constant SETTLEMENT_ADMIN_ROLE = keccak256("SETTLEMENT_ADMIN_ROLE");
     bytes32 public constant RELAYER_ROLE = keccak256("RELAYER_ROLE");
+    bytes32 public constant PROOF_FILL_ROLE = keccak256("PROOF_FILL_ROLE");
 
     IVerifier public verifier;
     HubMoneyMarket public moneyMarket;
@@ -31,6 +32,25 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
         address relayer;
         bool exists;
         bool consumed;
+    }
+
+    struct FillEvidenceInput {
+        uint8 intentType;
+        address user;
+        address hubAsset;
+        uint256 amount;
+        uint256 fee;
+        address relayer;
+    }
+
+    struct LockSnapshot {
+        address user;
+        uint8 intentType;
+        address hubAsset;
+        uint256 amount;
+        address relayer;
+        uint256 expiry;
+        uint8 status;
     }
 
     mapping(uint256 => bool) public batchExecuted;
@@ -125,32 +145,55 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
         uint256 fee,
         address relayer
     ) external onlyRole(RELAYER_ROLE) {
-        if (relayer != msg.sender) {
-            revert FillEvidenceRelayerMismatch(msg.sender, relayer);
-        }
+        FillEvidenceInput memory input = FillEvidenceInput({
+            intentType: intentType,
+            user: user,
+            hubAsset: hubAsset,
+            amount: amount,
+            fee: fee,
+            relayer: relayer
+        });
 
-        (
-            ,
-            address lockUser,
-            uint8 lockIntentType,
-            address lockAsset,
-            uint256 lockAmount,
-            address lockRelayer,
-            ,
-            uint256 lockExpiry,
-            uint8 lockStatus
-        ) = lockManager.locks(intentId);
+        if (input.relayer != msg.sender) {
+            revert FillEvidenceRelayerMismatch(msg.sender, input.relayer);
+        }
+        _recordFillEvidence(intentId, input);
+    }
+
+    function recordVerifiedBorrowFillEvidence(
+        bytes32 intentId,
+        address user,
+        address hubAsset,
+        uint256 amount,
+        uint256 fee,
+        address relayer
+    ) external onlyRole(PROOF_FILL_ROLE) {
+        _recordFillEvidence(
+            intentId,
+            FillEvidenceInput({
+                intentType: Constants.INTENT_BORROW,
+                user: user,
+                hubAsset: hubAsset,
+                amount: amount,
+                fee: fee,
+                relayer: relayer
+            })
+        );
+    }
+
+    function _recordFillEvidence(bytes32 intentId, FillEvidenceInput memory input) internal {
+        LockSnapshot memory lock = _snapshotLock(intentId);
 
         uint8 lockActiveStatus = lockManager.LOCK_STATUS_ACTIVE();
-        if (lockStatus != lockActiveStatus) {
-            revert FillEvidenceLockNotActive(intentId, lockStatus);
+        if (lock.status != lockActiveStatus) {
+            revert FillEvidenceLockNotActive(intentId, lock.status);
         }
-        if (block.timestamp > lockExpiry) {
-            revert FillEvidenceLockExpired(intentId, lockExpiry);
+        if (block.timestamp > lock.expiry) {
+            revert FillEvidenceLockExpired(intentId, lock.expiry);
         }
         if (
-            lockIntentType != intentType || lockUser != user || lockAsset != hubAsset || lockAmount != amount
-                || lockRelayer != relayer
+            lock.intentType != input.intentType || lock.user != input.user || lock.hubAsset != input.hubAsset
+                || lock.amount != input.amount || lock.relayer != input.relayer
         ) {
             revert FillEvidenceLockMismatch(intentId);
         }
@@ -162,17 +205,33 @@ contract HubSettlement is AccessControl, Pausable, ReentrancyGuard, IHubSettleme
         }
 
         fillEvidence[intentId] = FillEvidence({
-            intentType: intentType,
-            user: user,
-            hubAsset: hubAsset,
-            amount: amount,
-            fee: fee,
-            relayer: relayer,
+            intentType: input.intentType,
+            user: input.user,
+            hubAsset: input.hubAsset,
+            amount: input.amount,
+            fee: input.fee,
+            relayer: input.relayer,
             exists: true,
             consumed: false
         });
 
-        emit FillEvidenceRecorded(intentId, intentType, user, hubAsset, amount, fee, relayer);
+        emit FillEvidenceRecorded(
+            intentId, input.intentType, input.user, input.hubAsset, input.amount, input.fee, input.relayer
+        );
+    }
+
+    function _snapshotLock(bytes32 intentId) internal view returns (LockSnapshot memory snapshot) {
+        (
+            ,
+            snapshot.user,
+            snapshot.intentType,
+            snapshot.hubAsset,
+            snapshot.amount,
+            snapshot.relayer,
+            ,
+            snapshot.expiry,
+            snapshot.status
+        ) = lockManager.locks(intentId);
     }
 
     function settleBatch(DataTypes.SettlementBatch calldata batch, bytes calldata proof)

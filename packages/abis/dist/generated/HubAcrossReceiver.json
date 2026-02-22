@@ -143,6 +143,11 @@
                         "internalType": "address"
                     },
                     {
+                        "name": "spokeToken",
+                        "type": "address",
+                        "internalType": "address"
+                    },
+                    {
                         "name": "hubAsset",
                         "type": "address",
                         "internalType": "address"
@@ -533,6 +538,12 @@
             },
             {
                 "name": "user",
+                "type": "address",
+                "indexed": false,
+                "internalType": "address"
+            },
+            {
+                "name": "spokeToken",
                 "type": "address",
                 "indexed": false,
                 "internalType": "address"

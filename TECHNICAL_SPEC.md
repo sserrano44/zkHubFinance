@@ -260,6 +260,21 @@ Mock adapter:
 1. Local/dev escrow sink + event emission.
 2. Owner-controlled escrow release for testing.
 
+### 5.12 Across Borrow Fulfillment Path
+Files:
+1. `/Users/sebas/projects/elhub/contracts/src/hub/HubAcrossBorrowDispatcher.sol`
+2. `/Users/sebas/projects/elhub/contracts/src/spoke/SpokeAcrossBorrowReceiver.sol`
+3. `/Users/sebas/projects/elhub/contracts/src/hub/HubAcrossBorrowFinalizer.sol`
+4. `/Users/sebas/projects/elhub/contracts/src/zk/BorrowFillProofVerifier.sol`
+5. `/Users/sebas/projects/elhub/contracts/src/zk/AcrossBorrowFillProofBackend.sol`
+
+Responsibilities:
+1. `HubAcrossBorrowDispatcher` sends hub-funded borrow fills over Across to spoke receiver with deterministic message binding.
+2. `SpokeAcrossBorrowReceiver` only accepts callbacks from allowlisted spoke pool, transfers proceeds/fees, and emits `BorrowFillRecorded`.
+3. `HubAcrossBorrowFinalizer` permissionlessly verifies borrow-fill proof and records settlement fill evidence exactly once.
+4. Borrow proof backend enforces source receiver allowlist and source finality + source event inclusion checks.
+5. `HubSettlement` accepts proof-verified borrow fill evidence via `PROOF_FILL_ROLE`.
+
 ## 6. Intent and Lifecycle State Machines
 
 ### 6.1 Supply/Repay (Worldchain -> Base)
@@ -276,15 +291,27 @@ Mock adapter:
 7. Prover enqueues action.
 8. Settlement batch verifies and applies supply/repay accounting.
 
-### 6.2 Borrow/Withdraw (Base accounting -> Worldchain payout)
+### 6.2 Borrow (Base accounting -> Worldchain payout via Across)
 1. User signs EIP-712 intent.
 2. Relayer calls `HubLockManager.lock`.
-3. Relayer fills on spoke (`fillBorrow`/`fillWithdraw`).
+3. Relayer calls `HubAcrossBorrowDispatcher.dispatchBorrowFill`.
+4. Across destination fill calls `SpokeAcrossBorrowReceiver.handleV3AcrossMessage`:
+   1. receiver pays recipient and relayer fee.
+   2. receiver emits `BorrowFillRecorded`.
+5. Relayer observes `BorrowFillRecorded`, requests proof from prover, and calls `HubAcrossBorrowFinalizer.finalizeBorrowFill`.
+6. Finalizer verifies proof and records fill evidence into settlement.
+7. Prover batches finalize action.
+8. Settlement consumes lock, updates hub accounting, reimburses relayer.
+
+### 6.3 Withdraw (Base accounting -> Worldchain payout)
+1. User signs EIP-712 intent.
+2. Relayer calls `HubLockManager.lock`.
+3. Relayer fills withdraw directly on spoke (`SpokePortal.fillWithdraw`).
 4. Relayer records fill evidence in settlement.
 5. Prover batches finalize action.
 6. Settlement consumes lock, updates hub accounting, reimburses relayer.
 
-### 6.3 Indexer intent statuses
+### 6.4 Indexer intent statuses
 1. `initiated`
 2. `pending_lock`
 3. `locked`
@@ -293,7 +320,7 @@ Mock adapter:
 6. `settled`
 7. `failed`
 
-### 6.4 Indexer deposit statuses
+### 6.5 Indexer deposit statuses
 1. `initiated`
 2. `pending_fill`
 3. `bridged`
@@ -360,11 +387,17 @@ Public endpoints:
 Behavior:
 1. Watches spoke Across `V3FundsDeposited` logs.
 2. Updates indexer via signed internal calls.
-3. Triggers hub-side relay callback and permissionless proof finalization for inbound deposits.
-4. For borrow/withdraw submit:
+3. Waits for hub-side Across callback (`PendingDepositRecorded`), then runs permissionless proof finalization for inbound deposits.
+4. For borrow submit:
    1. lock on hub
-   2. fill on spoke
-   3. record fill evidence on hub
+   2. dispatch Across fill from hub via `HubAcrossBorrowDispatcher`
+   3. observe spoke `BorrowFillRecorded`
+   4. finalize proof on hub via `HubAcrossBorrowFinalizer`
+   5. enqueue prover action
+5. For withdraw submit:
+   1. lock on hub
+   2. fill on spoke (`SpokePortal.fillWithdraw`)
+   3. record fill evidence on hub settlement
    4. enqueue prover action
 
 ### 8.2 Indexer service
@@ -449,7 +482,7 @@ Coverage includes:
 3. Settlement replay/failure/atomicity.
 4. Liquidation behavior.
 5. Base fork supply/borrow lifecycle.
-6. Cross-chain fork lock/fill/settle path.
+6. Cross-chain fork lock/Across-dispatch/proof-finalize/settle path.
 7. Across receiver pending-fill/proof-finalization invariants.
 8. Production verifier path rejecting tampered proofs.
 
@@ -477,35 +510,14 @@ Checks:
 2. deposit transitions to `bridged` only after proof finalization
 3. settlement credits user supply on hub
 
-### 10.4 Scripted fork E2E (circuit mode)
-Script:
-1. `/Users/sebas/projects/elhub/scripts/e2e-fork-circuit-one-shot.mjs`
+### 10.4 Active E2E command set
+Commands:
+1. `pnpm test:e2e:base-mainnet-supply` (supply-only inbound lifecycle)
+2. `pnpm test:e2e:fork` (full supply + borrow lifecycle)
+3. `pnpm test:e2e` (runs both active E2E commands)
 
-Command:
-1. `pnpm test:e2e:fork:circuit`
-
-Preflight requirements:
-1. running fork RPCs for hub/spoke
-2. circuit artifacts present (`.wasm`, `.zkey`)
-3. `snarkjs` available
-4. if `HUB_GROTH16_VERIFIER_ADDRESS` is missing/stale, prepare step deploys/re-resolves it
-
-Direct runner (without one-shot prepare):
-1. script: `/Users/sebas/projects/elhub/scripts/e2e-fork-circuit.mjs`
-2. command: `pnpm test:e2e:fork:circuit:exec`
-
-### 10.5 Circuit E2E prepare helper
-Script:
-1. `/Users/sebas/projects/elhub/scripts/e2e-fork-circuit-prepare.mjs`
-
-Command:
-1. `pnpm test:e2e:fork:circuit:prepare`
-
-Behavior:
-1. Resolves RPC endpoints (including Tenderly keys from `.env`).
-2. Auto-deploys generated Groth16 verifier with `forge create --broadcast` when source exists and address is unset.
-3. If `--json` is passed, emits machine-readable env payload for one-shot wrapper scripts.
-4. Prints exact `export ...` commands and the final `pnpm test:e2e:fork:circuit` invocation.
+Note:
+1. Circuit-mode E2E wrappers were removed because deposit proof generation is not yet circuit-compatible end-to-end for the new pending-fill finalization path.
 
 ## 11. Security and Safety Requirements
 

@@ -43,8 +43,7 @@ Implemented:
 5. Added artifact build script: `circuits/prover/build-artifacts.sh`.
 6. Added production-verifier settlement tests that reject tampered proofs and accept valid proofs.
 7. Deployment script supports `HUB_VERIFIER_DEV_MODE=0` + `HUB_GROTH16_VERIFIER_ADDRESS` to deploy prod verifier wiring.
-8. Added dedicated circuit-mode fork E2E runner: `scripts/e2e-fork-circuit.mjs`.
-9. Added circuit E2E prepare helper that auto-deploys generated verifier and prints required env exports: `scripts/e2e-fork-circuit-prepare.mjs`.
+8. Circuit-mode E2E wrappers were removed from active test commands after deposit-proof flow changes made them non-canonical/incompatible.
 
 Acceptance criteria:
 1. `PROVER_MODE=circuit` succeeds end-to-end without fallback to dev proof.
@@ -274,16 +273,17 @@ This order reduces exploit surface early and avoids integrating real proving on 
 
 ---
 
-## Current Implementation Snapshot (2026-02-16)
+## Current Implementation Snapshot (2026-02-22)
 
 This section maps the plan to concrete code paths that are still production-sensitive.
 
 1. Real proving is wired, but circuit semantics are still action-root-only:
    - `/circuits/circom/SettlementBatchRoot.circom`
    - `/services/prover/src/proof.ts`
-2. Deposit bridging remains simulation-based in relayer:
-   - `/services/relayer/src/server.ts` (`mint` + `registerBridgedDeposit`)
-3. Custody still trusts role-based deposit registration rather than canonical bridge attestation:
+2. Deposit bridging ingestion is now Across pending-fill + proof-finalization based:
+   - `/services/relayer/src/server.ts` (`PendingDepositRecorded` watcher + `finalizePendingDeposit`)
+3. Custody bridge credit path is now proof-gated through `HubAcrossReceiver` only:
+   - `/contracts/src/hub/HubAcrossReceiver.sol`
    - `/contracts/src/hub/HubCustody.sol`
 4. Internal auth hardening is implemented; remaining gap is environment rollout validation:
    - Remaining gap is environment rollout validation, not core enforcement:
@@ -397,7 +397,7 @@ Implementation tasks:
 5. Add proof generation performance budget tests at batch size 50.
 
 Verification artifacts:
-1. `pnpm test:e2e:fork:circuit` passing on clean environment.
+1. Reintroduce a canonical circuit-mode E2E command only after deposit proof generation is circuit-compatible with pending-fill finalization.
 2. Contract tests proving tampered proof/public inputs are rejected.
 3. Benchmark report with proof generation and settlement gas at action counts 1, 10, 25, 50.
 

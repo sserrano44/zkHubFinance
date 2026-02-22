@@ -6,7 +6,7 @@ import { createPublicClient, createWalletClient, defineChain, formatEther, parse
 import { privateKeyToAccount } from "viem/accounts";
 import { HubSettlementAbi } from "@elhub/abis";
 import { buildBatch } from "./batch";
-import { buildDepositProofBatch } from "./deposit-proof";
+import { buildCanonicalBorrowFillProof, buildCanonicalDepositProof } from "./deposit-proof";
 import { CircuitProofProvider, DevProofProvider } from "./proof";
 import { JsonProverQueueStore, SqliteProverQueueStore } from "./queue-store";
 const runtimeEnv = (process.env.ZKHUB_ENV ?? process.env.NODE_ENV ?? "development").toLowerCase();
@@ -134,11 +134,39 @@ const depositWitnessSchema = z.object({
     depositId: z.string(),
     intentType: z.number().int().min(1).max(2),
     user: z.string().startsWith("0x"),
+    spokeToken: z.string().startsWith("0x"),
     hubAsset: z.string().startsWith("0x"),
     amount: z.string(),
     sourceTxHash: z.string().startsWith("0x"),
     sourceLogIndex: z.string(),
-    messageHash: z.string().startsWith("0x")
+    messageHash: z.string().startsWith("0x"),
+    sourceBlockNumber: z.string(),
+    sourceBlockHash: z.string().startsWith("0x"),
+    sourceReceiptsRoot: z.string().startsWith("0x"),
+    sourceSpokePool: z.string().startsWith("0x"),
+    destinationReceiver: z.string().startsWith("0x"),
+    destinationChainId: z.string()
+});
+const borrowFillWitnessSchema = z.object({
+    sourceChainId: z.string(),
+    intentId: z.string().startsWith("0x"),
+    intentType: z.number().int().min(3).max(3),
+    user: z.string().startsWith("0x"),
+    recipient: z.string().startsWith("0x"),
+    spokeToken: z.string().startsWith("0x"),
+    hubAsset: z.string().startsWith("0x"),
+    amount: z.string(),
+    fee: z.string(),
+    relayer: z.string().startsWith("0x"),
+    sourceTxHash: z.string().startsWith("0x"),
+    sourceLogIndex: z.string(),
+    messageHash: z.string().startsWith("0x"),
+    sourceBlockNumber: z.string(),
+    sourceBlockHash: z.string().startsWith("0x"),
+    sourceReceiptsRoot: z.string().startsWith("0x"),
+    sourceReceiver: z.string().startsWith("0x"),
+    destinationFinalizer: z.string().startsWith("0x"),
+    destinationChainId: z.string()
 });
 const queueStore = proverStoreKind === "sqlite"
     ? new SqliteProverQueueStore(dbPath, initialBatchId)
@@ -182,17 +210,38 @@ app.post("/internal/deposit-proof", async (req, res) => {
     }
     try {
         const witness = normalizeDepositWitness(parsed.data);
-        const batch = buildDepositProofBatch(witness);
-        const { proof, publicInputs } = await proofProvider.prove(batch);
+        const sourceProof = normalizeSourceDepositProof(parsed.data);
+        const proof = buildCanonicalDepositProof(witness, sourceProof);
         auditLog(req, "deposit_proof_ok");
         res.json({
             ok: true,
-            proof,
-            publicInputs: publicInputs.map((value) => value.toString())
+            proof
         });
     }
     catch (error) {
         auditLog(req, "deposit_proof_error", { message: error.message });
+        res.status(500).json({ ok: false, error: error.message });
+    }
+});
+app.post("/internal/borrow-fill-proof", async (req, res) => {
+    const parsed = borrowFillWitnessSchema.safeParse(req.body);
+    if (!parsed.success) {
+        auditLog(req, "borrow_fill_proof_rejected", { reason: "invalid_payload" });
+        res.status(400).json({ error: parsed.error.flatten() });
+        return;
+    }
+    try {
+        const witness = normalizeBorrowFillWitness(parsed.data);
+        const sourceProof = normalizeSourceBorrowFillProof(parsed.data);
+        const proof = buildCanonicalBorrowFillProof(witness, sourceProof);
+        auditLog(req, "borrow_fill_proof_ok");
+        res.json({
+            ok: true,
+            proof
+        });
+    }
+    catch (error) {
+        auditLog(req, "borrow_fill_proof_error", { message: error.message });
         res.status(500).json({ ok: false, error: error.message });
     }
 });
@@ -364,11 +413,49 @@ function normalizeDepositWitness(input) {
         depositId: BigInt(input.depositId),
         intentType: input.intentType,
         user: input.user,
+        spokeToken: input.spokeToken,
         hubAsset: input.hubAsset,
         amount: BigInt(input.amount),
         sourceTxHash: input.sourceTxHash,
         sourceLogIndex: BigInt(input.sourceLogIndex),
         messageHash: input.messageHash
+    };
+}
+function normalizeSourceDepositProof(input) {
+    return {
+        sourceBlockNumber: BigInt(input.sourceBlockNumber),
+        sourceBlockHash: input.sourceBlockHash,
+        sourceReceiptsRoot: input.sourceReceiptsRoot,
+        sourceSpokePool: input.sourceSpokePool,
+        destinationReceiver: input.destinationReceiver,
+        destinationChainId: BigInt(input.destinationChainId)
+    };
+}
+function normalizeBorrowFillWitness(input) {
+    return {
+        sourceChainId: BigInt(input.sourceChainId),
+        intentId: input.intentId,
+        intentType: input.intentType,
+        user: input.user,
+        recipient: input.recipient,
+        spokeToken: input.spokeToken,
+        hubAsset: input.hubAsset,
+        amount: BigInt(input.amount),
+        fee: BigInt(input.fee),
+        relayer: input.relayer,
+        sourceTxHash: input.sourceTxHash,
+        sourceLogIndex: BigInt(input.sourceLogIndex),
+        messageHash: input.messageHash
+    };
+}
+function normalizeSourceBorrowFillProof(input) {
+    return {
+        sourceBlockNumber: BigInt(input.sourceBlockNumber),
+        sourceBlockHash: input.sourceBlockHash,
+        sourceReceiptsRoot: input.sourceReceiptsRoot,
+        sourceReceiver: input.sourceReceiver,
+        destinationFinalizer: input.destinationFinalizer,
+        destinationChainId: BigInt(input.destinationChainId)
     };
 }
 async function postInternal(baseUrl, routePath, body) {

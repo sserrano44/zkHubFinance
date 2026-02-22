@@ -248,13 +248,15 @@ async function main() {
   });
 
   await simulateAcrossRelay({
-    spokePublic,
-    hubPublic,
-    hubWallet,
+    sourcePublic: spokePublic,
+    destinationPublic: hubPublic,
+    destinationWallet: hubWallet,
     sourceAcrossSpokePool: deployments.spoke.acrossSpokePool,
-    hubAcrossSpokePool: deployments.hub.hubAcrossSpokePool,
+    destinationAcrossSpokePool: deployments.hub.hubAcrossSpokePool,
     sourceChainId: BigInt(SPOKE_CHAIN_ID),
-    sourceTxHash: supplyTxHash
+    sourceTxHash: supplyTxHash,
+    expectedDestinationChainId: BigInt(HUB_CHAIN_ID),
+    flowLabel: "supply"
   });
 
   const depositId = Number(nextDepositId) + 1;
@@ -370,6 +372,23 @@ async function main() {
   if (!submitRes.ok) {
     throw new Error(`intent submit failed: ${submitRes.status} ${await submitRes.text()}`);
   }
+  const submitPayload = await submitRes.json();
+  const dispatchTx = submitPayload.dispatchTx;
+  if (!dispatchTx) {
+    throw new Error("missing dispatchTx for borrow across flow");
+  }
+
+  await simulateAcrossRelay({
+    sourcePublic: hubPublic,
+    destinationPublic: spokePublic,
+    destinationWallet: spokeWallet,
+    sourceAcrossSpokePool: deployments.hub.hubAcrossSpokePool,
+    destinationAcrossSpokePool: deployments.spoke.acrossSpokePool,
+    sourceChainId: BigInt(HUB_CHAIN_ID),
+    sourceTxHash: dispatchTx,
+    expectedDestinationChainId: BigInt(SPOKE_CHAIN_ID),
+    flowLabel: "borrow"
+  });
 
   await postInternal(PROVER_API_URL, "/internal/flush", {}, INTERNAL_API_AUTH_SECRET);
 
@@ -512,15 +531,17 @@ async function writeAndWait(walletClient, publicClient, request) {
 }
 
 async function simulateAcrossRelay({
-  spokePublic,
-  hubPublic,
-  hubWallet,
+  sourcePublic,
+  destinationPublic,
+  destinationWallet,
   sourceAcrossSpokePool,
-  hubAcrossSpokePool,
+  destinationAcrossSpokePool,
   sourceChainId,
-  sourceTxHash
+  sourceTxHash,
+  expectedDestinationChainId,
+  flowLabel
 }) {
-  const receipt = await spokePublic.getTransactionReceipt({ hash: sourceTxHash });
+  const receipt = await sourcePublic.getTransactionReceipt({ hash: sourceTxHash });
   let relayArgs;
   for (const log of receipt.logs) {
     if (log.address.toLowerCase() !== sourceAcrossSpokePool.toLowerCase()) continue;
@@ -546,17 +567,17 @@ async function simulateAcrossRelay({
   }
 
   if (!relayArgs) {
-    throw new Error("missing V3FundsDeposited log for supply tx");
+    throw new Error(`missing V3FundsDeposited log for ${flowLabel} tx`);
   }
-  if (relayArgs.destinationChainId !== BigInt(HUB_CHAIN_ID)) {
+  if (relayArgs.destinationChainId !== expectedDestinationChainId) {
     throw new Error(
-      `unexpected destination chain in deposit log. expected=${HUB_CHAIN_ID} got=${relayArgs.destinationChainId.toString()}`
+      `unexpected destination chain in ${flowLabel} deposit log. expected=${expectedDestinationChainId.toString()} got=${relayArgs.destinationChainId.toString()}`
     );
   }
 
-  await writeAndWait(hubWallet, hubPublic, {
+  await writeAndWait(destinationWallet, destinationPublic, {
     abi: MockAcrossSpokePoolAbi,
-    address: hubAcrossSpokePool,
+    address: destinationAcrossSpokePool,
     functionName: "relayV3Deposit",
     args: [
       sourceChainId,
